@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Test/tool caches
+.pytest_cache/
+.pytest_tmp/
+.ruff_cache/
+
+# Virtual environments
+.venv
+
+# Local configuration and cache
+.env
+config/providers.json
+data/*.sqlite
+data/*.sqlite3
+data/*.db
+
+# Local agent instructions and tool state
+AGENTS.md
+CLAUDE.md
+.claude/
+.codex/
