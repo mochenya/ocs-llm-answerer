@@ -208,7 +208,7 @@ flowchart LR
 | --- | --- |
 | 作者 | mochenya |
 | 邮箱 | 74086519+mochenya@users.noreply.github.com |
-| 仓库 | <https://github.com/mochenya/ocs-llm-question> |
+| 仓库 | <https://github.com/mochenya/ocs-llm-answerer.git> |
 
 ## 许可证
 

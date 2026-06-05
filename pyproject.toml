@@ -31,7 +31,7 @@ dependencies = [
 ocs-llm-answerer = "ocs_llm_answerer.cli:main"
 
 [project.urls]
-Repository = "https://github.com/mochenya/ocs-llm-question"
+Repository = "https://github.com/mochenya/ocs-llm-answerer.git"
 
 [build-system]
 requires = ["hatchling"]
