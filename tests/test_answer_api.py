@@ -492,6 +492,18 @@ def test_health_endpoint(tmp_path):
     assert response.json() == {"status": "ok"}
 
 
+def test_root_head_endpoint_supports_ocs_status_probe(tmp_path):
+    app = create_app(
+        settings=Settings(app_database_path=tmp_path / "cache.sqlite3"),
+        provider=FakeProvider(),
+    )
+
+    with TestClient(app) as client:
+        response = client.head("/?t=1780724765342")
+
+    assert response.status_code == 200
+
+
 def test_ocs_answerer_config_is_array_and_maps_response(tmp_path):
     app = create_app(
         settings=Settings(app_api_key="secret", app_database_path=tmp_path / "cache.sqlite3"),

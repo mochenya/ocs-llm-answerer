@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 
 from ocs_llm_answerer.answer.service import AnswerService
 from ocs_llm_answerer.api.dependencies import (
@@ -11,6 +11,11 @@ from ocs_llm_answerer.api.dependencies import (
 from ocs_llm_answerer.core.models import AnswerRequest, AnswerResponse
 
 router = APIRouter()
+
+
+@router.head("/")
+async def root_status_probe() -> Response:
+    return Response(status_code=200)
 
 
 @router.get("/health")
