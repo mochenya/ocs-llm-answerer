@@ -11,7 +11,7 @@ from ocs_llm_answerer.core.config import (
     get_settings,
     load_providers_config,
 )
-from ocs_llm_answerer.llm import provider as provider_module
+from ocs_llm_answerer.llm import factory as provider_module
 
 
 def test_load_providers_config(tmp_path):

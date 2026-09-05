@@ -1,8 +1,13 @@
 import asyncio
 import warnings
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import pytest
+
+from ocs_llm_answerer.answer.models import OCSQuestionType, Question
 from ocs_llm_answerer.core.config import ProviderConfig
-from ocs_llm_answerer.core.models import AnswerRequest
+from ocs_llm_answerer.llm.errors import ProviderResponseError
 from ocs_llm_answerer.llm.openai_responses import (
     OpenAIAnswerPayload,
     OpenAIResponsesProvider,
@@ -22,9 +27,9 @@ def test_system_prompt_describes_ocs_answer_format():
 
 
 def test_build_user_input_uses_delimited_sections():
-    request = AnswerRequest(
+    request = Question(
         title="1+1=?",
-        type="single",
+        question_type=OCSQuestionType.SINGLE,
         options=["A. 2", "B. 3"],
     )
 
@@ -83,9 +88,9 @@ def test_openai_responses_provider_uses_pydantic_text_format():
 
     result = asyncio.run(
         provider.answer(
-            AnswerRequest(
+            Question(
                 title="以下哪些是 Python 可变数据类型？",
-                type="multiple",
+                question_type=OCSQuestionType.MULTIPLE,
                 options=["A. list", "B. tuple", "C. dict", "D. str"],
             )
         )
@@ -114,7 +119,9 @@ def test_openai_responses_provider_falls_back_to_output_text_payload():
     )
     provider._client = fake_client
 
-    result = asyncio.run(provider.answer(AnswerRequest(title="1+1=?", type="single")))
+    result = asyncio.run(
+        provider.answer(Question(title="1+1=?", question_type=OCSQuestionType.SINGLE))
+    )
 
     assert result.answer.answers == ["A"]
     assert result.answer.explanation == "依据"
@@ -132,7 +139,7 @@ def test_openai_responses_provider_attaches_raw_body_to_parse_errors():
     provider._client = _FakeOpenAIClientWithOutputText("not-json")
 
     try:
-        asyncio.run(provider.answer(AnswerRequest(title="1+1=?", type="single")))
+        asyncio.run(provider.answer(Question(title="1+1=?", question_type=OCSQuestionType.SINGLE)))
     except RuntimeError as exc:
         assert exc.raw_body == '{"raw":true}'
         assert "ValidationError" in str(exc)
@@ -173,6 +180,42 @@ def test_extract_usage_does_not_serialize_parsed_response():
     assert usage.total_tokens == 30
     assert usage.cached_tokens == 2
     assert not response.model_dump_called
+
+
+def test_invalid_usage_keeps_raw_response_in_provider_error() -> None:
+    """用量解析失败也应携带原始响应，不在生成调用结果时丢失故障现场。"""
+    config = ProviderConfig.model_validate(
+        {
+            "adapter": "openai_responses",
+            "base_url": "https://test.invalid/v1",
+            "api_key_env": "FAKE_KEY",
+            "model": "fake-model",
+        }
+    )
+
+    async def exercise() -> None:
+        """通过异步替身返回非法用量，不发送网络请求。"""
+        provider = OpenAIResponsesProvider("fake", config, "fake-key")
+        await provider.aclose()
+        response = _FakeParsedResponse(
+            OpenAIAnswerPayload(answers=["A"], explanation="", confidence=0.9)
+        )
+        response.usage = {"input_tokens": -1}
+        raw = SimpleNamespace(text="exact raw body", status_code=200, parse=lambda: response)
+        client = SimpleNamespace(
+            responses=SimpleNamespace(
+                with_raw_response=SimpleNamespace(parse=AsyncMock(return_value=raw))
+            )
+        )
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(provider, "_client", client)
+            with pytest.raises(ProviderResponseError) as raised:
+                await provider.answer(Question(title="题目"))
+        assert raised.value.raw_body == "exact raw body"
+        assert raised.value.status_code == 200
+        assert raised.value.__cause__ is not None
+
+    asyncio.run(exercise())
 
 
 class _FakeOpenAIClient:

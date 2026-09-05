@@ -1,48 +1,26 @@
 from __future__ import annotations
 
+import json
 import time
-from importlib.resources import files
 from pathlib import Path
 
-import aiosqlite
+from pydantic import ValidationError
 
-from ocs_llm_answerer.core.models import CachedAnswer
-from ocs_llm_answerer.database.questions import question_values_from_cached, upsert_question
-
-_SCHEMA_FILE = "schema.sql"
-
-
-async def init_sqlite(database_path: Path, schema_path: Path | None = None) -> None:
-    """创建当前数据库结构，可对相同结构重复初始化。
-
-    早期项目直接维护当前 schema，不迁移或识别历史结构。结构改变后使用
-    新数据库文件，避免自动改写已有题目和审计数据。
-
-    Args:
-        database_path: 数据库文件路径，父目录不存在时会创建。
-        schema_path: 可选建表脚本；默认使用包内 schema.sql。
-
-    Raises:
-        aiosqlite.Error: 数据库连接或建表失败。
-    """
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    schema_sql = _read_schema_sql(schema_path)
-    async with aiosqlite.connect(database_path) as db:
-        await db.execute("PRAGMA foreign_keys = ON")
-        await db.executescript(schema_sql)
-        await db.commit()
-
-
-def _read_schema_sql(schema_path: Path | None) -> str:
-    if schema_path is not None:
-        return schema_path.read_text(encoding="utf-8")
-    return files(__package__).joinpath(_SCHEMA_FILE).read_text(encoding="utf-8")
+from ocs_llm_answerer.answer.errors import RepositoryError
+from ocs_llm_answerer.answer.models import CachedAnswer, RequestAudit
+from ocs_llm_answerer.database.connection import connect_database
+from ocs_llm_answerer.database.questions import question_values, upsert_question
 
 
 class AnswerCacheRepository:
     """基于 SQLite 的答案缓存仓储，负责缓存读写和命中统计。"""
 
     def __init__(self, database_path: Path) -> None:
+        """记录连接目标，不在构造时执行数据库操作。
+
+        Args:
+            database_path: 已初始化的 SQLite 数据库文件路径。
+        """
         self._database_path = database_path
 
     async def get(
@@ -62,13 +40,11 @@ class AnswerCacheRepository:
             带有来源调用 ID 的缓存记录；未命中时返回 None。
 
         Raises:
-            aiosqlite.Error: 查询或统计写入失败。
+            RepositoryError: 查询或统计写入失败。
         """
         if seen_at_ns is None:
             seen_at_ns = time.time_ns()
-        async with aiosqlite.connect(self._database_path) as db:
-            await db.execute("PRAGMA foreign_keys = ON")
-            db.row_factory = aiosqlite.Row
+        async with connect_database(self._database_path) as db:
             cursor = await db.execute(
                 """
                 SELECT q.question_hash, c.llm_request_id, q.question, q.question_type,
@@ -83,6 +59,13 @@ class AnswerCacheRepository:
             await cursor.close()
             if row is None:
                 return None
+            values = dict(row)
+            options_json = values.pop("options_json")
+            try:
+                values["options"] = json.loads(options_json) if options_json is not None else None
+                record = CachedAnswer.model_validate(values)
+            except (json.JSONDecodeError, ValidationError) as exc:
+                raise RepositoryError("Stored answer is invalid") from exc
             await db.execute(
                 """
                 UPDATE answer_cache
@@ -113,9 +96,15 @@ class AnswerCacheRepository:
                     (seen_at_ns, question_hash),
                 )
             await db.commit()
-        return CachedAnswer.model_validate(dict(row))
+        return record
 
-    async def set(self, record: CachedAnswer, seen_at_ns: int | None = None) -> None:
+    async def set(
+        self,
+        record: CachedAnswer,
+        seen_at_ns: int | None = None,
+        *,
+        audit: RequestAudit | None = None,
+    ) -> None:
         """在同一短事务中写入题目与当前答案，并验证调用外键。
 
         调用方应先保存成功流水，再传入其整数 ID。写入失败时，题目更新和
@@ -124,16 +113,15 @@ class AnswerCacheRepository:
         Args:
             record: 已通过题型校验、引用已存在调用的答案。
             seen_at_ns: 本次请求时间；缺省时使用当前 Unix 纳秒时间。
+            audit: 与答案内容分离的原始请求快照。
 
         Raises:
-            aiosqlite.IntegrityError: 调用不存在或其他数据库约束被违反。
-            aiosqlite.Error: 数据库写入失败。
+            RepositoryError: 调用不存在、约束被违反或数据库写入失败。
         """
         if seen_at_ns is None:
             seen_at_ns = time.time_ns()
-        async with aiosqlite.connect(self._database_path) as db:
-            await db.execute("PRAGMA foreign_keys = ON")
-            await upsert_question(db, *question_values_from_cached(record), seen_at_ns=seen_at_ns)
+        async with connect_database(self._database_path) as db:
+            await upsert_question(db, *question_values(record, audit), seen_at_ns=seen_at_ns)
             await db.execute(
                 """
                 INSERT INTO answer_cache (

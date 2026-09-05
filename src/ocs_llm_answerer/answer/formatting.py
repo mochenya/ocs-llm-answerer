@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import re
 
+from ocs_llm_answerer.answer.models import OCSQuestionType, Question
 from ocs_llm_answerer.answer.normalization import normalize_options
-from ocs_llm_answerer.core.models import AnswerRequest, OCSQuestionType
 
 _LETTER = re.compile(r"([A-Za-z])[.。:：]?")
 _LETTERS = re.compile(r"[A-Za-z]{2,}")
@@ -21,7 +21,7 @@ class InvalidAnswerError(ValueError):
     """模型答案违反题型规则，不能作为成功答案返回或缓存。"""
 
 
-def validate_and_format_answer(request: AnswerRequest, answers: list[str]) -> str:
+def validate_and_format_answer(request: Question, answers: list[str]) -> str:
     """校验完整答案列表，再生成 OCS 使用的分隔字符串。
 
     单选和判断题必须恰好有一项；选择题允许编号或与选项精确匹配的文本。

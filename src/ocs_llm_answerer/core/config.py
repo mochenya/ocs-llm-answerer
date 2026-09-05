@@ -20,7 +20,7 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from ocs_llm_answerer.core.models import LLMProviderMetadata
+from ocs_llm_answerer.llm.models import LLMProviderMetadata
 
 _API_KEY_ENV = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _ENV_FILE = Path(".env")
@@ -101,6 +101,11 @@ class ProviderConfig(BaseModel):
         return value
 
     def to_metadata(self) -> LLMProviderMetadata:
+        """提取与 SDK 无关的审计配置，不读取密钥值。
+
+        Returns:
+            当前模型和连接配置的快照。
+        """
         return LLMProviderMetadata(
             adapter=self.adapter,
             base_url=self.base_url,

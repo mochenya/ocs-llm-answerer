@@ -4,15 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from ocs_llm_answerer.core.models import (
-    CachedAnswer,
+from ocs_llm_answerer.answer.errors import RepositoryError
+from ocs_llm_answerer.answer.models import CachedAnswer, NormalizedQuestion
+from ocs_llm_answerer.database.cache import AnswerCacheRepository
+from ocs_llm_answerer.database.connection import init_sqlite
+from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
+from ocs_llm_answerer.llm.models import (
     LLMAnswer,
     LLMCallResult,
     LLMProviderMetadata,
-    NormalizedQuestion,
 )
-from ocs_llm_answerer.database.cache import AnswerCacheRepository, init_sqlite
-from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
 
 
 async def save_call(database_path: Path, record: CachedAnswer) -> int:
@@ -30,7 +31,7 @@ async def save_call(database_path: Path, record: CachedAnswer) -> int:
             question_hash=record.question_hash,
             question=record.question,
             question_type=record.question_type,
-            options_json=record.options_json,
+            options=record.options,
         ),
         LLMProviderMetadata(
             adapter="fake",
@@ -63,7 +64,7 @@ def persisted_answer(tmp_path):
         llm_request_id=1,
         question="1+1=?",
         question_type="single",
-        options_json='["A. 2", "B. 3"]',
+        options=["A. 2", "B. 3"],
         answer="A",
         explanation="解析",
         confidence=0.9,
@@ -138,8 +139,9 @@ def test_missing_call_is_rejected_and_question_changes_roll_back(persisted_answe
         cache = AnswerCacheRepository(database_path)
         if existing_cache:
             await cache.set(record)
-        with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        with pytest.raises(RepositoryError) as error:
             await cache.set(invalid)
+        assert isinstance(error.value.__cause__, sqlite3.IntegrityError)
         return await cache.get(record.question_hash)
 
     cached = asyncio.run(exercise())

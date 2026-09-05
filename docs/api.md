@@ -89,6 +89,22 @@ Content-Type: application/json
 
 不符合题型规则的模型答案返回 `502`，JSON 示例为 `{"detail":"Invalid model answer: single requires exactly one answer"}`。失败会记录原始响应和已取得的用量，不写入答案缓存。
 
+### 错误响应
+
+| 状态码 | 情况 | `detail` |
+| --- | --- | --- |
+| `401` | 本服务访问密钥缺失或无效 | `Invalid API key` |
+| `422` | 编码、JSON 或请求字段无效 | 编码/JSON 错误字符串，或字段校验错误列表 |
+| `502` | 模型答案违反题型规则 | `Invalid model answer: ...` |
+| `502` | 上游错误响应或结构解析失败 | `Invalid model provider response` |
+| `503` | 上游连接失败、上游 `429` 或 `503` | `Model provider is unavailable` |
+| `503` | 缓存读写或成功审计写入失败 | `Answer storage is unavailable` |
+| `504` | SDK 模型调用超时 | `Model provider timed out` |
+
+上游状态码与本服务状态码不是简单透传。例如上游凭据错误不会返回本服务的 `401`，而是返回 `502`，具体原因只保存在内部审计。未知编程错误仍返回 `500`。
+
+失败审计再次写入失败时，服务日志记录该故障，但 HTTP 响应继续表达原始答题错误。成功调用流水先独立提交，缓存随后提交；缓存失败时仍返回 `503`，但保留成功流水。重试可能产生新的模型调用。
+
 响应示例：
 
 ```json
@@ -122,3 +138,5 @@ Content-Type: application/json
 OCS 可能使用 `Content-Type: text/plain;charset=UTF-8` 发送 JSON 字符串。后端会手动读取请求体并按 JSON 解析，所以 `POST /api/v1/answer` 同时支持标准 JSON 和 text/plain 包裹的 JSON。
 
 无效 JSON、非 UTF-8 请求体或 Pydantic 校验失败都会返回 `422`。
+
+`/openapi.json` 和 `/docs` 同时声明 `application/json` 请求模型以及 `text/plain` JSON 文本示例，并列出可预期的错误响应。两种传输的原始 UTF-8 请求体均独立保存用于审计，不交给 Provider。

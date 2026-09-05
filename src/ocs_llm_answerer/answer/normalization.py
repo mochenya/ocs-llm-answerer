@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from ocs_llm_answerer.core.models import AnswerRequest, NormalizedQuestion
+from ocs_llm_answerer.answer.models import NormalizedQuestion, Question
 
 _QUESTION_HASH_VERSION = 1
 
@@ -40,14 +40,14 @@ def normalize_options(options: list[str] | str | None) -> list[str] | None:
     return [normalize_text(option) for option in values if option.strip()] or None
 
 
-def normalize_request(request: AnswerRequest) -> AnswerRequest:
-    """创建模型输入与缓存共用的题目副本，并保留原始请求审计快照。
+def normalize_question(request: Question) -> Question:
+    """创建模型输入与缓存共用的题目副本。
 
     Args:
-        request: 已通过输入校验的 OCS 请求。
+        request: 已完成传输层转换的内部题目。
 
     Returns:
-        标准化后的副本；不会修改输入对象或其原始 JSON。
+        标准化后的副本，不修改输入对象。
     """
     return request.model_copy(
         update={
@@ -57,7 +57,7 @@ def normalize_request(request: AnswerRequest) -> AnswerRequest:
     )
 
 
-def build_question_hash(request: AnswerRequest) -> tuple[str, list[str] | None]:
+def build_question_hash(request: Question) -> tuple[str, list[str] | None]:
     """按版本化的标准化题目内容生成稳定标识。
 
     版本是哈希输入的一部分。修改标准化规则时提升版本即可隔离不同规则，
@@ -80,24 +80,19 @@ def build_question_hash(request: AnswerRequest) -> tuple[str, list[str] | None]:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), normalized_options
 
 
-def build_normalized_question(request: AnswerRequest) -> NormalizedQuestion:
+def build_normalized_question(request: Question) -> NormalizedQuestion:
     """构造缓存和调用日志共用的题目记录。
 
     Args:
-        request: 带有原始 JSON 快照的已校验请求。
+        request: 内部题目，不包含数据库编码或请求快照。
 
     Returns:
-        包含题目身份、标准化字段和原始载荷的存储记录。
+        包含题目身份和标准化字段的内部记录。
     """
     question_hash, normalized_options = build_question_hash(request)
     return NormalizedQuestion(
         question_hash=question_hash,
         question=normalize_text(request.title),
         question_type=request.question_type,
-        options_json=(
-            json.dumps(normalized_options, ensure_ascii=False)
-            if normalized_options is not None
-            else None
-        ),
-        question_raw_json=request.raw_payload_json,
+        options=normalized_options,
     )

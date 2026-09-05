@@ -1,7 +1,7 @@
 import pytest
 
 from ocs_llm_answerer.answer.formatting import InvalidAnswerError, validate_and_format_answer
-from ocs_llm_answerer.core.models import AnswerRequest
+from ocs_llm_answerer.answer.models import OCSQuestionType, Question
 
 
 @pytest.mark.parametrize(
@@ -29,7 +29,7 @@ from ocs_llm_answerer.core.models import AnswerRequest
 )
 def test_valid_answers_follow_question_type_rules(question_type, answers, expected):
     """题型校验允许可确定的格式偏差，且不改写填空内容。"""
-    request = AnswerRequest(title="题目", type=question_type, options=["A. 苹果", "B. 香蕉"])
+    request = Question(title="题目", question_type=question_type, options=["A. 苹果", "B. 香蕉"])
 
     assert validate_and_format_answer(request, answers) == expected
 
@@ -59,7 +59,7 @@ def test_valid_answers_follow_question_type_rules(question_type, answers, expect
 )
 def test_invalid_answers_are_rejected(question_type, answers):
     """数量、编号范围、判断值和空项错误必须在进入缓存前被拒绝。"""
-    request = AnswerRequest(title="题目", type=question_type, options=["A. 苹果", "B. 香蕉"])
+    request = Question(title="题目", question_type=question_type, options=["A. 苹果", "B. 香蕉"])
 
     with pytest.raises(InvalidAnswerError):
         validate_and_format_answer(request, answers)
@@ -67,14 +67,18 @@ def test_invalid_answers_are_rejected(question_type, answers):
 
 def test_multiple_choice_preserves_full_option_text_before_splitting():
     """完整英文单词和带分隔符的选项文本不能被误拆成一组编号。"""
-    request = AnswerRequest(title="选择", type="multiple", options=["A. list", "B. A,B"])
+    request = Question(
+        title="选择", question_type=OCSQuestionType.MULTIPLE, options=["A. list", "B. A,B"]
+    )
 
     assert validate_and_format_answer(request, ["list", "A,B"]) == "A#B"
 
 
 def test_ambiguous_option_text_is_rejected():
     """两个选项具有相同文本时，要求模型给出确定的编号。"""
-    request = AnswerRequest(title="选择", type="single", options=["A. 相同", "B. 相同"])
+    request = Question(
+        title="选择", question_type=OCSQuestionType.SINGLE, options=["A. 相同", "B. 相同"]
+    )
 
     with pytest.raises(InvalidAnswerError):
         validate_and_format_answer(request, ["相同"])
@@ -82,7 +86,7 @@ def test_ambiguous_option_text_is_rejected():
 
 def test_missing_options_only_allow_letter_validation():
     """缺少选项列表时允许编号，但不能把无法核实的文本映射为编号。"""
-    request = AnswerRequest(title="选择", type="single")
+    request = Question(title="选择", question_type=OCSQuestionType.SINGLE)
 
     assert validate_and_format_answer(request, ["Z"]) == "Z"
     with pytest.raises(InvalidAnswerError):

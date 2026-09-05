@@ -4,9 +4,10 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
+from ocs_llm_answerer.answer.models import Question
 from ocs_llm_answerer.core.config import Settings
-from ocs_llm_answerer.core.models import (
-    AnswerRequest,
+from ocs_llm_answerer.llm.errors import ProviderUnavailableError
+from ocs_llm_answerer.llm.models import (
     LLMAnswer,
     LLMCallResult,
     LLMProviderMetadata,
@@ -33,7 +34,18 @@ class FakeProvider:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def answer(self, request: AnswerRequest) -> LLMCallResult:
+    async def aclose(self) -> None:
+        """内存替身不持有需要释放的资源。"""
+
+    async def answer(self, request: Question) -> LLMCallResult:
+        """根据内部题目返回固定答案和审计数据。
+
+        Args:
+            request: 已标准化的业务题目。
+
+        Returns:
+            包含原始响应和用量的固定调用结果。
+        """
         self.calls += 1
         answer = LLMAnswer(answers=["A"], explanation=f"解析：{request.title}", confidence=0.9)
         raw_response = {
@@ -74,14 +86,18 @@ class FakeProvider:
         )
 
 
-class ProviderHTTPError(RuntimeError):
-    status_code = 429
-
-
 class FailingProvider(FakeProvider):
-    async def answer(self, request: AnswerRequest) -> LLMCallResult:
+    async def answer(self, request: Question) -> LLMCallResult:
+        """模拟上游限流。
+
+        Args:
+            request: 业务题目。
+
+        Raises:
+            ProviderUnavailableError: 固定的上游限流错误。
+        """
         self.calls += 1
-        raise ProviderHTTPError("provider exploded")
+        raise ProviderUnavailableError("provider exploded", status_code=429)
 
 
 def test_answer_requires_api_key_when_configured(tmp_path):
@@ -249,7 +265,7 @@ def test_answer_records_failed_llm_request(tmp_path):
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post("/api/v1/answer", json={"title": "1+1=?", "type": "single"})
 
-    assert response.status_code == 500
+    assert response.status_code == 503
 
     with sqlite3.connect(database_path) as db:
         row = db.execute(
@@ -260,7 +276,7 @@ def test_answer_records_failed_llm_request(tmp_path):
             """
         ).fetchone()
 
-    assert row[:5] == ("FAILURE", "ProviderHTTPError", "provider exploded", 429, None)
+    assert row[:5] == ("FAILURE", "ProviderUnavailableError", "provider exploded", 429, None)
     assert isinstance(row[5], int)
     assert isinstance(row[6], int)
     assert row[6] >= row[5]
@@ -606,7 +622,7 @@ def test_answer_does_not_reuse_cache_across_semantic_whitespace(tmp_path):
     assert provider.calls == 2
 
 
-def test_provider_receives_the_normalized_question_with_original_audit_payload(tmp_path):
+def test_provider_receives_normalized_question_without_audit_payload(tmp_path):
     """模型输入匹配缓存使用的题目，审计仍然保存未经修改的请求体。"""
     provider = FakeProvider()
     received = []
@@ -630,7 +646,10 @@ def test_provider_receives_the_normalized_question_with_original_audit_payload(t
     assert response.status_code == 200
     assert received[0].title == response.json()["question"] == "代码：\n    x = 'a  b'"
     assert received[0].options == ["A. 1", "B. 2"]
-    assert received[0].raw_payload_json == raw
+    assert isinstance(received[0], Question)
+    assert not hasattr(received[0], "raw_payload_json")
+    with sqlite3.connect(tmp_path / "cache.db") as db:
+        assert db.execute("SELECT question_raw_json FROM llm_requests").fetchone()[0] == raw
 
 
 @pytest.mark.parametrize(

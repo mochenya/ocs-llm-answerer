@@ -2,14 +2,21 @@ from __future__ import annotations
 
 from importlib.resources import files
 
-from ocs_llm_answerer.core.models import AnswerRequest
+from ocs_llm_answerer.answer.models import Question
 
 SYSTEM_PROMPT = files(__package__).joinpath("prompts/answer_system.txt").read_text(encoding="utf-8")
 
 
-def build_user_input(request: AnswerRequest) -> str:
-    options = request.options
-    option_text = "\n".join(options) if isinstance(options, list) else options or ""
+def build_user_input(request: Question) -> str:
+    """将内部题目转换为模型输入，不读取原始 HTTP 载荷。
+
+    Args:
+        request: 选项已转换为有序列表的题目。
+
+    Returns:
+        保留原有提示词分段和题目内容的文本。
+    """
+    option_text = "\n".join(request.options or [])
 
     return "\n".join(
         [
