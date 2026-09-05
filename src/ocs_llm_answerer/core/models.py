@@ -137,10 +137,24 @@ class AnswerResponse(BaseModel):
 
 
 class CachedAnswer(BaseModel):
-    """已持久化的缓存记录。"""
+    """通过题型校验且可追溯到模型调用的缓存答案。
+
+    Attributes:
+        question_hash: 稳定的题目身份。
+        llm_request_id: 已存在的调用流水整数主键，由数据库外键保证引用有效。
+        question: 标准化题干。
+        question_type: OCS 题型或未知类型。
+        options_json: 有序选项的 JSON 存储形式。
+        question_raw_json: 本次请求的原始审计载荷。
+        answer: 已转换为 OCS 格式的合法答案。
+        explanation: 生成该答案时的模型依据。
+        confidence: 生成该答案时的模型自报置信度。
+        provider: 生成该答案的 Provider 名称。
+        model: 生成该答案的模型名称。
+    """
 
     question_hash: str
-    call_hash: str
+    llm_request_id: int = Field(gt=0)
     question: str
     question_type: str | None
     options_json: str | None

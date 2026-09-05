@@ -1,6 +1,5 @@
 import json
 import sqlite3
-from hashlib import sha256
 
 import pytest
 from fastapi.testclient import TestClient
@@ -171,7 +170,7 @@ def test_answer_records_successful_llm_request(tmp_path):
     with sqlite3.connect(database_path) as db:
         rows = db.execute(
             """
-            SELECT call_hash, request_started_at_ns, request_completed_at_ns, question_hash,
+            SELECT id, request_started_at_ns, request_completed_at_ns, question_hash,
                    adapter, base_url, api_key_env, model,
                    timeout_seconds, max_retries, extra_body,
                    request_status, response_body_raw,
@@ -181,14 +180,14 @@ def test_answer_records_successful_llm_request(tmp_path):
         ).fetchall()
         cache_row = db.execute(
             """
-            SELECT question_hash, call_hash
+            SELECT question_hash, llm_request_id
             FROM answer_cache
             """
         ).fetchone()
 
     assert len(rows) == 1
     (
-        call_hash,
+        llm_request_id,
         request_started_at_ns,
         request_completed_at_ns,
         question_hash,
@@ -226,26 +225,8 @@ def test_answer_records_successful_llm_request(tmp_path):
     assert isinstance(request_started_at_ns, int)
     assert isinstance(request_completed_at_ns, int)
     assert request_completed_at_ns >= request_started_at_ns
-    expected_hash_payload = {
-        "question_hash": question_hash,
-        "request_started_at_ns": request_started_at_ns,
-        "adapter": adapter,
-        "base_url": base_url,
-        "api_key_env": api_key_env,
-        "model": model,
-        "timeout_seconds": timeout_seconds,
-        "max_retries": max_retries,
-        "extra_body": json.loads(extra_body),
-    }
-    expected_hash = sha256(
-        json.dumps(
-            expected_hash_payload,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    assert call_hash == expected_hash
+    assert isinstance(llm_request_id, int)
+    assert llm_request_id > 0
     assert http_status == 200
     assert json.loads(raw_response)["usage"] == {
         "input_tokens": 265,
@@ -254,7 +235,7 @@ def test_answer_records_successful_llm_request(tmp_path):
         "total_tokens": 919,
     }
     assert usage == [265, 654, 919, 192]
-    assert cache_row == (question_hash, call_hash)
+    assert cache_row == (question_hash, llm_request_id)
 
 
 def test_answer_records_failed_llm_request(tmp_path):

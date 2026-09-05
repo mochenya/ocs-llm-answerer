@@ -72,7 +72,7 @@ class AnswerService:
             raise
 
         request_completed_at_ns = time.time_ns()
-        call_hash = await self._request_log.record_success(
+        llm_request_id = await self._request_log.record_success(
             normalized_question,
             self._provider.request_metadata,
             llm_result,
@@ -84,7 +84,7 @@ class AnswerService:
         llm_answer = llm_result.answer
         record = CachedAnswer(
             question_hash=normalized_question.question_hash,
-            call_hash=call_hash,
+            llm_request_id=llm_request_id,
             question=normalized_question.question,
             question_type=normalized_question.question_type,
             options_json=normalized_question.options_json,

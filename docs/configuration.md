@@ -40,7 +40,7 @@ X-API-Key: change-me
 
 ## SQLite 数据库
 
-服务启动时会初始化 SQLite schema。默认数据库路径是：
+服务启动时会初始化当前 SQLite schema。早期项目不提供历史结构迁移；表结构变化后请配置新的数据库文件路径，已有文件不会被自动转换或删除。默认数据库路径是：
 
 ```text
 data/cache.sqlite3
@@ -53,6 +53,8 @@ data/cache.sqlite3
 | `questions` | 标准化后的题目、题型、选项和原始请求 JSON。 |
 | `answer_cache` | 题目答案缓存、provider、模型、命中次数和最近命中时间。 |
 | `llm_requests` | 每次 LLM 调用的配置、状态、原始响应、错误、耗时和 token 用量。 |
+
+`llm_requests.id` 是调用的唯一整数标识；`answer_cache.llm_request_id` 是必填外键，引用生成该答案的调用。缓存不能引用不存在的调用，也不能单独删除仍被缓存引用的流水。只清理缓存会保留调用历史；显式删除题目则会级联删除该题目的缓存和调用记录。
 
 `llm_requests.response_body_raw` 保存原始响应文本，允许 HTML、纯文本、截断 JSON 和空字符串。HTTP 错误及解析失败也会保留正文和上游状态码；应用自己生成的 JSON 字段仍保留合法性约束。
 

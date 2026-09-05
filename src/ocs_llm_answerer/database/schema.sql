@@ -14,35 +14,9 @@ CREATE TABLE IF NOT EXISTS questions (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- answer_cache: 题目答案缓存
-CREATE TABLE IF NOT EXISTS answer_cache (
-    question_hash TEXT PRIMARY KEY,
-    call_hash TEXT NOT NULL,
-    answer TEXT NOT NULL,
-    explanation TEXT NOT NULL DEFAULT '',
-    confidence REAL NOT NULL CHECK (
-        confidence >= 0 AND confidence <= 1
-    ),
-    provider TEXT NOT NULL,
-    model TEXT NOT NULL,
-    hit_count INTEGER NOT NULL DEFAULT 0 CHECK (
-        hit_count >= 0
-    ),
-    last_hit_at_ns INTEGER CHECK (
-        last_hit_at_ns IS NULL OR last_hit_at_ns > 0
-    ),
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (question_hash)
-    REFERENCES questions(question_hash)
-    ON DELETE CASCADE
-);
-
 -- llm_requests: 每次 LLM 调用流水
 CREATE TABLE IF NOT EXISTS llm_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    call_hash TEXT NOT NULL,
     request_started_at_ns INTEGER NOT NULL CHECK (
         request_started_at_ns > 0
     ),
@@ -106,17 +80,42 @@ CREATE TABLE IF NOT EXISTS llm_requests (
     ON DELETE CASCADE
 );
 
+-- answer_cache: 当前答案必须能追溯到一条已存在的 LLM 调用。
+CREATE TABLE IF NOT EXISTS answer_cache (
+    question_hash TEXT PRIMARY KEY,
+    llm_request_id INTEGER NOT NULL,
+    answer TEXT NOT NULL,
+    explanation TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL CHECK (
+        confidence >= 0 AND confidence <= 1
+    ),
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    hit_count INTEGER NOT NULL DEFAULT 0 CHECK (
+        hit_count >= 0
+    ),
+    last_hit_at_ns INTEGER CHECK (
+        last_hit_at_ns IS NULL OR last_hit_at_ns > 0
+    ),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (question_hash)
+    REFERENCES questions(question_hash)
+    ON DELETE CASCADE,
+
+    FOREIGN KEY (llm_request_id)
+    REFERENCES llm_requests(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_answer_cache_updated_at
 ON answer_cache (updated_at);
 
-CREATE INDEX IF NOT EXISTS idx_answer_cache_call_hash
-ON answer_cache (call_hash);
+CREATE INDEX IF NOT EXISTS idx_answer_cache_llm_request_id
+ON answer_cache (llm_request_id);
 
 CREATE INDEX IF NOT EXISTS idx_llm_requests_question_started
 ON llm_requests (question_hash, request_started_at_ns DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_llm_requests_status_started
 ON llm_requests (request_status, request_started_at_ns DESC, id DESC);
-
-CREATE INDEX IF NOT EXISTS idx_llm_requests_call_hash
-ON llm_requests (call_hash);

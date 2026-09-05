@@ -13,7 +13,18 @@ _SCHEMA_FILE = "schema.sql"
 
 
 async def init_sqlite(database_path: Path, schema_path: Path | None = None) -> None:
-    """启动时为全新 checkout 创建数据库表。"""
+    """创建当前数据库结构，可对相同结构重复初始化。
+
+    早期项目直接维护当前 schema，不迁移或识别历史结构。结构改变后使用
+    新数据库文件，避免自动改写已有题目和审计数据。
+
+    Args:
+        database_path: 数据库文件路径，父目录不存在时会创建。
+        schema_path: 可选建表脚本；默认使用包内 schema.sql。
+
+    Raises:
+        aiosqlite.Error: 数据库连接或建表失败。
+    """
     database_path.parent.mkdir(parents=True, exist_ok=True)
     schema_sql = _read_schema_sql(schema_path)
     async with aiosqlite.connect(database_path) as db:
@@ -40,7 +51,19 @@ class AnswerCache:
         question_raw_json: str | None = None,
         seen_at_ns: int | None = None,
     ) -> CachedAnswer | None:
-        """按稳定的题目哈希返回一条缓存答案。"""
+        """读取当前答案及其来源调用，并更新命中统计。
+
+        Args:
+            question_hash: 标准化题目的稳定标识。
+            question_raw_json: 本次请求原文，提供时更新题目的最近载荷。
+            seen_at_ns: 本次请求时间；缺省时使用当前 Unix 纳秒时间。
+
+        Returns:
+            带有来源调用 ID 的缓存记录；未命中时返回 None。
+
+        Raises:
+            aiosqlite.Error: 查询或统计写入失败。
+        """
         if seen_at_ns is None:
             seen_at_ns = time.time_ns()
         async with aiosqlite.connect(self._database_path) as db:
@@ -48,8 +71,8 @@ class AnswerCache:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """
-                SELECT q.question_hash, c.call_hash, q.question, q.question_type, q.options_json,
-                       c.answer, c.explanation, c.confidence, c.provider, c.model
+                SELECT q.question_hash, c.llm_request_id, q.question, q.question_type,
+                       q.options_json, c.answer, c.explanation, c.confidence, c.provider, c.model
                 FROM answer_cache AS c
                 JOIN questions AS q ON q.question_hash = c.question_hash
                 WHERE c.question_hash = ?
@@ -93,7 +116,19 @@ class AnswerCache:
         return CachedAnswer.model_validate(dict(row))
 
     async def set(self, record: CachedAnswer, seen_at_ns: int | None = None) -> None:
-        """按题目哈希插入或更新最新的 provider 答案。"""
+        """在同一短事务中写入题目与当前答案，并验证调用外键。
+
+        调用方应先保存成功流水，再传入其整数 ID。写入失败时，题目更新和
+        缓存更新一并回滚，避免留下部分修改。
+
+        Args:
+            record: 已通过题型校验、引用已存在调用的答案。
+            seen_at_ns: 本次请求时间；缺省时使用当前 Unix 纳秒时间。
+
+        Raises:
+            aiosqlite.IntegrityError: 调用不存在或其他数据库约束被违反。
+            aiosqlite.Error: 数据库写入失败。
+        """
         if seen_at_ns is None:
             seen_at_ns = time.time_ns()
         async with aiosqlite.connect(self._database_path) as db:
@@ -102,11 +137,11 @@ class AnswerCache:
             await db.execute(
                 """
                 INSERT INTO answer_cache (
-                    question_hash, call_hash, answer, explanation, confidence, provider, model
+                    question_hash, llm_request_id, answer, explanation, confidence, provider, model
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(question_hash) DO UPDATE SET
-                    call_hash = excluded.call_hash,
+                    llm_request_id = excluded.llm_request_id,
                     answer = excluded.answer,
                     explanation = excluded.explanation,
                     confidence = excluded.confidence,
@@ -116,7 +151,7 @@ class AnswerCache:
                 """,
                 (
                     record.question_hash,
-                    record.call_hash,
+                    record.llm_request_id,
                     record.answer,
                     record.explanation,
                     record.confidence,
