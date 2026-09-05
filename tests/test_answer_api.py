@@ -517,10 +517,7 @@ def test_ocs_answerer_config_is_array_and_maps_response(tmp_path):
     config = response.json()
     assert isinstance(config, list)
     assert config[0]["url"] == "http://testserver/api/v1/answer"
-    assert config[0]["headers"] == {
-        "Content-Type": "application/json",
-        "X-API-Key": "secret",
-    }
+    assert config[0]["headers"] == {"Content-Type": "application/json"}
     assert "type" not in config[0]
     assert config[0]["handler"] == (
         "return (res)=> res.code === 1 ? [res.question, res.answer] : undefined"
@@ -543,3 +540,49 @@ def test_ocs_answerer_config_can_use_gm_xmlhttp_request(tmp_path):
     assert response.status_code == 200
     config = response.json()
     assert config[0]["type"] == "GM_xmlhttpRequest"
+
+
+def test_public_subscription_cannot_bypass_answer_authentication(tmp_path):
+    """匿名订阅不泄露密钥，使用模板请求头仍然不能访问受保护的答题接口。"""
+    provider = FakeProvider()
+    app = create_app(
+        settings=Settings(app_api_key="private-test-key", app_database_path=tmp_path / "cache.db"),
+        provider=provider,
+    )
+
+    with TestClient(app) as client:
+        subscription = client.get(
+            "/ocs-answerer.json", headers={"Origin": "https://untrusted.example"}
+        )
+        template_headers = subscription.json()[0]["headers"]
+        denied = client.post("/api/v1/answer", json={"title": "1+1=?"}, headers=template_headers)
+        allowed = client.post(
+            "/api/v1/answer",
+            json={"title": "1+1=?"},
+            headers={"X-API-Key": "private-test-key"},
+        )
+        authenticated_subscription = client.get(
+            "/ocs-answerer.json", headers={"X-API-Key": "private-test-key"}
+        )
+
+    assert subscription.status_code == 200
+    assert "private-test-key" not in subscription.text
+    assert "private-test-key" not in authenticated_subscription.text
+    assert "X-API-Key" not in template_headers
+    assert denied.status_code == 401
+    assert allowed.status_code == 200
+    assert provider.calls == 1
+
+
+def test_public_subscription_works_without_configured_api_key(tmp_path):
+    """未启用鉴权时，公开订阅中的请求头可以直接用于答题。"""
+    app = create_app(
+        settings=Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"),
+        provider=FakeProvider(),
+    )
+
+    with TestClient(app) as client:
+        config = client.get("/ocs-answerer.json").json()[0]
+        response = client.post("/api/v1/answer", json={"title": "1+1=?"}, headers=config["headers"])
+
+    assert response.status_code == 200

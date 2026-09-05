@@ -95,17 +95,17 @@ http://127.0.0.1:8000
 http://127.0.0.1:8000/ocs-answerer.json
 ```
 
-这个地址会返回 OCS 可直接导入的数组配置，并自动带上本服务当前的答题接口地址。若设置了 `OCS_LLM_ANSWERER_API_KEY`，订阅配置会自动包含 `X-API-Key` 请求头。
+这个地址会返回 OCS 可导入的数组配置，并自动带上本服务当前的答题接口地址。公开订阅始终不包含 API Key。若设置了 `OCS_LLM_ANSWERER_API_KEY`，请使用下方的手动配置，在 `X-API-Key` 中填写相同密钥后导入 OCS。
 
 ## OCS 配置示例
 
-推荐优先使用订阅地址：
+未启用 API Key 鉴权时，推荐直接使用订阅地址：
 
 ```text
 http://127.0.0.1:8000/ocs-answerer.json
 ```
 
-如果需要手动配置题库，可以直接参考下面的完整 JSON。注意：OCS 题库配置必须是数组。
+启用 API Key 鉴权时，使用下面的完整 JSON，将 `change-me` 替换为 `.env` 中的 `OCS_LLM_ANSWERER_API_KEY`，再粘贴到 OCS 自定义题库配置。未启用鉴权时可以删除 `X-API-Key` 请求头。注意：OCS 题库配置必须是数组，含密钥的配置不要公开分享。
 
 ```json
 [

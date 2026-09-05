@@ -14,7 +14,7 @@
 
 ## `GET /ocs-answerer.json`
 
-返回 OCS AnswererWrapper 可导入的题库订阅配置数组。OCS 会把订阅结果当数组展开，所以这里必须返回数组，不能返回单个对象。
+返回 OCS AnswererWrapper 可导入的公开题库订阅模板。OCS 会把订阅结果当数组展开，所以这里必须返回数组，不能返回单个对象。该接口无需鉴权，始终不返回访问密钥。
 
 响应示例：
 
@@ -27,8 +27,7 @@
     "method": "post",
     "contentType": "json",
     "headers": {
-      "Content-Type": "application/json",
-      "X-API-Key": "change-me"
+      "Content-Type": "application/json"
     },
     "data": {
       "title": "${title}",
@@ -40,7 +39,7 @@
 ]
 ```
 
-如果没有配置 `OCS_LLM_ANSWERER_API_KEY`，响应中的 `headers` 不会包含 `X-API-Key`。
+未配置 `OCS_LLM_ANSWERER_API_KEY` 时可直接使用订阅。配置了密钥时，需将模板复制到 OCS 自定义题库配置，并在 `headers` 中手动填写 `X-API-Key`；密钥不会通过公开订阅分发。
 
 ## `POST /api/v1/answer`
 

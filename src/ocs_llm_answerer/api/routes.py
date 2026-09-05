@@ -25,11 +25,17 @@ async def health() -> dict[str, str]:
 
 @router.get("/ocs-answerer.json")
 async def ocs_answerer_config(request: Request) -> list[dict[str, object]]:
-    """返回 OCS AnswererWrapper 订阅配置。"""
-    headers: dict[str, str] = {"Content-Type": "application/json"}
-    api_key = getattr(request.app.state, "app_api_key", None)
-    if api_key:
-        headers["X-API-Key"] = api_key
+    """返回不含访问密钥的公开 OCS 订阅模板。
+
+    订阅允许匿名读取，因此不能回传应用密钥。启用鉴权时，用户需要在
+    OCS 自定义题库配置中手动填写 X-API-Key。
+
+    Args:
+        request: 用于生成服务地址和读取 OCS 请求模式的 HTTP 请求。
+
+    Returns:
+        OCS 可导入的配置数组，其中仅包含公开信息。
+    """
 
     config: dict[str, object] = {
         "name": "OCS LLM Answerer",
@@ -37,7 +43,7 @@ async def ocs_answerer_config(request: Request) -> list[dict[str, object]]:
         "url": str(request.url_for("answer_question")),
         "method": "post",
         "contentType": "json",
-        "headers": headers,
+        "headers": {"Content-Type": "application/json"},
         "data": {
             "title": "${title}",
             "type": "${type}",

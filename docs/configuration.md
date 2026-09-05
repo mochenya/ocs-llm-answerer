@@ -36,7 +36,7 @@ OPENAI_API_KEY=sk-...
 X-API-Key: change-me
 ```
 
-`GET /ocs-answerer.json` 会根据当前设置自动生成包含 `X-API-Key` 的 OCS 订阅配置。不要把真实密钥提交到 Git；`.env` 已被 `.gitignore` 忽略。
+`GET /ocs-answerer.json` 是公开订阅接口，始终不返回 `X-API-Key`。未启用鉴权时可以直接使用订阅；启用鉴权时，将订阅模板复制到 OCS 自定义题库配置，在 `headers` 中手动添加上述请求头，并填入 `.env` 中的相同密钥。不要把真实密钥或含密钥的题库配置提交到 Git；`.env` 已被 `.gitignore` 忽略。
 
 ## SQLite 数据库
 
