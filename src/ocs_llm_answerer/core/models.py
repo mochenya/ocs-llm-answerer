@@ -28,6 +28,24 @@ class AnswerRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
+    @field_validator("title")
+    @classmethod
+    def title_must_contain_text(cls, value: str) -> str:
+        """拒绝纯空白题干，并将实际文本标准化留给答题层。
+
+        Args:
+            value: 已通过字符串类型及长度校验的题干。
+
+        Returns:
+            未改写的题干文本。
+
+        Raises:
+            ValueError: 题干不含任何非空白字符。
+        """
+        if not value.strip():
+            raise ValueError("title must contain non-whitespace text")
+        return value
+
     @field_validator("question_type", mode="before")
     @classmethod
     def blank_question_type_is_unknown(cls, value: object) -> object:

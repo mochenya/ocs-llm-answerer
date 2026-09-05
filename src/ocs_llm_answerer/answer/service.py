@@ -1,64 +1,16 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import re
 import time
 
+from ocs_llm_answerer.answer.normalization import build_normalized_question, normalize_request
 from ocs_llm_answerer.core.models import (
     AnswerRequest,
     AnswerResponse,
     CachedAnswer,
-    NormalizedQuestion,
 )
 from ocs_llm_answerer.database.cache import AnswerCache
 from ocs_llm_answerer.database.llm_requests import LLMRequestLog
 from ocs_llm_answerer.llm.provider import LLMProvider
-
-_WHITESPACE = re.compile(r"\s+")
-
-
-def normalize_text(value: str) -> str:
-    return _WHITESPACE.sub(" ", value).strip()
-
-
-def normalize_options(options: list[str] | str | None) -> list[str] | None:
-    """把 OCS 选项载荷标准化为可比较的列表。"""
-    if options is None:
-        return None
-    if isinstance(options, str):
-        normalized = [normalize_text(line) for line in options.splitlines() if line.strip()]
-        return normalized or None
-    normalized = [normalize_text(option) for option in options if option.strip()]
-    return normalized or None
-
-
-def build_question_hash(request: AnswerRequest) -> tuple[str, list[str] | None]:
-    """基于题目语义字段而不是原始 JSON 形状生成哈希。"""
-    normalized_options = normalize_options(request.options)
-    payload = {
-        "title": normalize_text(request.title),
-        "type": normalize_text(request.question_type or ""),
-        "options": normalized_options,
-    }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), normalized_options
-
-
-def build_normalized_question(request: AnswerRequest) -> NormalizedQuestion:
-    question_hash, normalized_options = build_question_hash(request)
-    options_json = (
-        json.dumps(normalized_options, ensure_ascii=False)
-        if normalized_options is not None
-        else None
-    )
-    return NormalizedQuestion(
-        question_hash=question_hash,
-        question=normalize_text(request.title),
-        question_type=normalize_text(request.question_type or "") or None,
-        options_json=options_json,
-        question_raw_json=request.raw_payload_json,
-    )
 
 
 class AnswerService:
@@ -72,7 +24,19 @@ class AnswerService:
         self._request_log = request_log
 
     async def answer(self, request: AnswerRequest) -> AnswerResponse:
+        """使用相同的标准化输入查询缓存或调用模型。
+
+        Args:
+            request: 已校验的题目及可选原始请求快照。
+
+        Returns:
+            带有答案来源和缓存命中标志的 OCS 响应。
+
+        Raises:
+            Exception: Provider 调用或持久化失败时向调用方传播错误。
+        """
         seen_at_ns = time.time_ns()
+        request = normalize_request(request)
         normalized_question = build_normalized_question(request)
         cached = await self._cache.get(
             normalized_question.question_hash,

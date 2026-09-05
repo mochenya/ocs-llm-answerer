@@ -24,7 +24,17 @@ def verify_api_key(request: Request, x_api_key: str | None = Header(default=None
 
 
 async def parse_answer_request(request: Request) -> AnswerRequest:
-    """兼容标准 JSON，以及 OCS 用 text/plain 包起来的 JSON 请求体。"""
+    """解析标准 JSON 或 OCS 使用 text/plain 发送的 JSON 载荷。
+
+    Args:
+        request: 待读取的 HTTP 请求。
+
+    Returns:
+        已校验的题目，保留原始 UTF-8 JSON 供审计使用。
+
+    Raises:
+        HTTPException: 编码、JSON 语法或字段校验失败时返回 422。
+    """
     try:
         # OCS 可能用 Content-Type: text/plain;charset=UTF-8 发送 JSON 字符串。
         # 如果不手动解析，FastAPI 会把整个请求体当成普通文本，直接返回 422。
@@ -46,5 +56,5 @@ async def parse_answer_request(request: Request) -> AnswerRequest:
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=exc.errors(),
+            detail=exc.errors(include_context=False),
         ) from exc

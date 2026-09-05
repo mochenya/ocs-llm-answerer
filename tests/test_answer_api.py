@@ -2,6 +2,7 @@ import json
 import sqlite3
 from hashlib import sha256
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ocs_llm_answerer.core.config import Settings
@@ -586,3 +587,66 @@ def test_public_subscription_works_without_configured_api_key(tmp_path):
         response = client.post("/api/v1/answer", json={"title": "1+1=?"}, headers=config["headers"])
 
     assert response.status_code == 200
+
+
+@pytest.mark.parametrize("title", ["", " ", "\t\r\n", "\u2003"])
+def test_answer_rejects_blank_title_without_calling_provider(tmp_path, title):
+    """纯空白题干返回可序列化的 422 JSON，并且不消耗模型调用。"""
+    provider = FakeProvider()
+    app = create_app(
+        settings=Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"),
+        provider=provider,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/answer", json={"title": title})
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["title"]
+    assert provider.calls == 0
+
+
+def test_answer_does_not_reuse_cache_across_semantic_whitespace(tmp_path):
+    """题干字符串内的不同空格触发独立答题，外围空白仍可复用缓存。"""
+    provider = FakeProvider()
+    app = create_app(
+        settings=Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"),
+        provider=provider,
+    )
+
+    with TestClient(app) as client:
+        first = client.post("/api/v1/answer", json={"title": 'len("a  b") 的结果'})
+        second = client.post("/api/v1/answer", json={"title": 'len("a b") 的结果'})
+        repeated = client.post("/api/v1/answer", json={"title": '  len("a  b") 的结果  '})
+
+    assert not first.json()["cache_hit"]
+    assert not second.json()["cache_hit"]
+    assert repeated.json()["cache_hit"]
+    assert provider.calls == 2
+
+
+def test_provider_receives_the_normalized_question_with_original_audit_payload(tmp_path):
+    """模型输入匹配缓存使用的题目，审计仍然保存未经修改的请求体。"""
+    provider = FakeProvider()
+    received = []
+    original_answer = provider.answer
+
+    async def capture_answer(request):
+        """记录实际模型输入，再使用确定性答案完成请求。"""
+        received.append(request)
+        return await original_answer(request)
+
+    provider.answer = capture_answer
+    app = create_app(
+        settings=Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"),
+        provider=provider,
+    )
+    raw = json.dumps({"title": "  代码：\r\n    x = 'a  b'  ", "options": " A. 1\r\nB. 2 "})
+
+    with TestClient(app) as client:
+        response = client.post("/api/v1/answer", content=raw)
+
+    assert response.status_code == 200
+    assert received[0].title == response.json()["question"] == "代码：\n    x = 'a  b'"
+    assert received[0].options == ["A. 1", "B. 2"]
+    assert received[0].raw_payload_json == raw
