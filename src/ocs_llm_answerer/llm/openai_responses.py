@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from typing import Never
 
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
 from ocs_llm_answerer.core.config import ProviderConfig
@@ -62,25 +63,28 @@ class OpenAIResponsesProvider:
             未拼接的答案项及原始响应、HTTP 状态和用量。
 
         Raises:
-            _RawResponseError: 响应不能解析为约定的结构。
+            _RawResponseError: HTTP 错误或解析失败，异常包含原文和状态码。
             Exception: SDK 请求失败时保留原始错误。
         """
-        raw_response = await self._client.responses.with_raw_response.parse(
-            model=self.model,
-            instructions=SYSTEM_PROMPT,
-            input=build_user_input(request),
-            store=False,
-            temperature=0.1,
-            max_output_tokens=800,
-            text_format=OpenAIAnswerPayload,
-            extra_body=self._extra_body,
-        )
+        try:
+            raw_response = await self._client.responses.with_raw_response.parse(
+                model=self.model,
+                instructions=SYSTEM_PROMPT,
+                input=build_user_input(request),
+                store=False,
+                temperature=0.1,
+                max_output_tokens=800,
+                text_format=OpenAIAnswerPayload,
+                extra_body=self._extra_body,
+            )
+        except APIStatusError as exc:
+            _raise_with_raw(exc, exc.response.text, exc.status_code)
         response_body_raw = raw_response.text
         try:
             response = raw_response.parse()
             payload = _extract_parsed_answer_payload(response)
         except Exception as exc:
-            _raise_with_raw(exc, response_body_raw)
+            _raise_with_raw(exc, response_body_raw, raw_response.status_code)
         llm_answer = LLMAnswer(
             answers=payload.answers,
             explanation=payload.explanation,
@@ -95,17 +99,41 @@ class OpenAIResponsesProvider:
 
 
 class _RawResponseError(RuntimeError):
-    """把解析或校验错误与 LLM 原始响应体一起封装。"""
+    """携带可审计响应的 Provider 错误。
 
-    def __init__(self, message: str, raw_body: str) -> None:
+    Attributes:
+        raw_body: 原始响应文本，不要求为合法 JSON。
+        status_code: 上游实际返回的 HTTP 状态码。
+    """
+
+    def __init__(self, message: str, raw_body: str, status_code: int) -> None:
+        """封装失败现场，不改写响应正文。
+
+        Args:
+            message: 包含原始异常类型的错误说明。
+            raw_body: 从 HTTP 响应读取的文本。
+            status_code: 对应 HTTP 响应的状态码。
+        """
         super().__init__(message)
         self.raw_body = raw_body
+        self.status_code = status_code
 
 
-def _raise_with_raw(exc: Exception, raw_body: str) -> None:
+def _raise_with_raw(exc: Exception, raw_body: str, status_code: int) -> Never:
+    """传播附带原始响应的错误，并保留原异常链。
+
+    Args:
+        exc: SDK 或响应解析抛出的异常。
+        raw_body: 上游原始响应文本。
+        status_code: 上游 HTTP 状态码。
+
+    Raises:
+        _RawResponseError: 携带响应正文、状态码及原始异常链的错误。
+    """
     raise _RawResponseError(
         f"{type(exc).__name__}: {exc}",
         raw_body,
+        status_code,
     ) from exc
 
 

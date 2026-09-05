@@ -86,7 +86,14 @@ class LLMUsage(BaseModel):
 
 
 class LLMCallResult(BaseModel):
-    """Provider 原始响应数据和标准化答案。"""
+    """Provider 结果及审计数据。
+
+    Attributes:
+        answer: 未进行题型校验的结构化答案。
+        response_body_raw: 原始响应文本，不要求内容为合法 JSON。
+        http_status: 上游 HTTP 状态码。
+        usage: 响应报告的 token 用量。
+    """
 
     answer: LLMAnswer
     response_body_raw: str | None = None

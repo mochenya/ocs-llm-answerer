@@ -75,9 +75,8 @@ CREATE TABLE IF NOT EXISTS llm_requests (
         request_status IN ('PENDING', 'SUCCESS', 'FAILURE')
     ),
 
-    response_body_raw TEXT CHECK (
-        response_body_raw IS NULL OR json_valid(response_body_raw)
-    ),
+    -- 原始响应可以是 HTML、纯文本或截断 JSON，不能用 JSON 约束丢弃故障现场。
+    response_body_raw TEXT,
 
     error_type TEXT,
     error_message TEXT,

@@ -54,6 +54,8 @@ data/cache.sqlite3
 | `answer_cache` | 题目答案缓存、provider、模型、命中次数和最近命中时间。 |
 | `llm_requests` | 每次 LLM 调用的配置、状态、原始响应、错误、耗时和 token 用量。 |
 
+`llm_requests.response_body_raw` 保存原始响应文本，允许 HTML、纯文本、截断 JSON 和空字符串。HTTP 错误及解析失败也会保留正文和上游状态码；应用自己生成的 JSON 字段仍保留合法性约束。
+
 `data/*.sqlite`、`data/*.sqlite3` 和 `data/*.db` 已被忽略，避免把本地题库缓存提交到仓库。
 
 ## Provider 配置
