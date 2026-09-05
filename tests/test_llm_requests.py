@@ -9,8 +9,8 @@ from ocs_llm_answerer.answer.normalization import build_normalized_question
 from ocs_llm_answerer.answer.service import AnswerService
 from ocs_llm_answerer.core.config import ProviderConfig
 from ocs_llm_answerer.core.models import AnswerRequest, LLMAnswer, LLMCallResult
-from ocs_llm_answerer.database.cache import AnswerCache, init_sqlite
-from ocs_llm_answerer.database.llm_requests import LLMRequestLog
+from ocs_llm_answerer.database.cache import AnswerCacheRepository, init_sqlite
+from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
 from ocs_llm_answerer.llm.openai_responses import OpenAIResponsesProvider
 
 
@@ -50,7 +50,11 @@ def test_real_sdk_errors_keep_raw_response_in_audit(tmp_path, status_code, raw_b
             max_retries=0,
             http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
         )
-        service = AnswerService(AnswerCache(database_path), provider, LLMRequestLog(database_path))
+        service = AnswerService(
+            cache_repository=AnswerCacheRepository(database_path),
+            provider=provider,
+            request_repository=LLMRequestRepository(database_path),
+        )
         try:
             with pytest.raises(RuntimeError) as error:
                 await service.answer(AnswerRequest(title="失败响应测试", type="single"))
@@ -83,7 +87,7 @@ def test_raw_text_is_allowed_while_application_json_is_validated(tmp_path):
     async def exercise():
         """写入带有非 JSON 原文的成功调用记录。"""
         await init_sqlite(database_path)
-        await LLMRequestLog(database_path).record_success(
+        await LLMRequestRepository(database_path).record_success(
             build_normalized_question(AnswerRequest(title="测试")),
             metadata,
             LLMCallResult(

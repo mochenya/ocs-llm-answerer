@@ -12,6 +12,12 @@
 - Provider 返回结构化答案项；题型校验和 OCS 格式转换集中在 `answer/formatting.py`，成功缓存只接收通过校验的答案。
 - 新增和实质修改的核心函数使用 Google 风格 Docstring，说明职责、参数、返回值与可预期异常。
 
+## 核心职责
+
+- `AnswerService`：编排答题流程，协调 Provider 和仓储，不直接执行 SQL。
+- `AnswerCacheRepository`：封装 SQLite 答案缓存读写、题目信息更新和命中统计。
+- `LLMRequestRepository`：封装 SQLite 调用流水写入，保留成功和失败调用的审计信息。
+
 ## 常用命令
 
 安装依赖并准备本地配置：

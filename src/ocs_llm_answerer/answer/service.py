@@ -10,20 +10,23 @@ from ocs_llm_answerer.core.models import (
     CachedAnswer,
     LLMCallResult,
 )
-from ocs_llm_answerer.database.cache import AnswerCache
-from ocs_llm_answerer.database.llm_requests import LLMRequestLog
+from ocs_llm_answerer.database.cache import AnswerCacheRepository
+from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
 from ocs_llm_answerer.llm.provider import LLMProvider
 
 
 class AnswerService:
-    """协调缓存查询、provider 回退和缓存持久化。"""
+    """协调缓存查询、模型调用、答案校验和仓储持久化。"""
 
     def __init__(
-        self, cache: AnswerCache, provider: LLMProvider, request_log: LLMRequestLog
+        self,
+        cache_repository: AnswerCacheRepository,
+        provider: LLMProvider,
+        request_repository: LLMRequestRepository,
     ) -> None:
-        self._cache = cache
+        self._cache_repository = cache_repository
         self._provider = provider
-        self._request_log = request_log
+        self._request_repository = request_repository
 
     async def answer(self, request: AnswerRequest) -> AnswerResponse:
         """使用相同的标准化输入查询缓存或调用模型。
@@ -41,7 +44,7 @@ class AnswerService:
         seen_at_ns = time.time_ns()
         request = normalize_request(request)
         normalized_question = build_normalized_question(request)
-        cached = await self._cache.get(
+        cached = await self._cache_repository.get(
             normalized_question.question_hash,
             question_raw_json=normalized_question.question_raw_json,
             seen_at_ns=seen_at_ns,
@@ -58,7 +61,7 @@ class AnswerService:
         except Exception as exc:
             request_completed_at_ns = time.time_ns()
             raw = getattr(exc, "raw_body", None)
-            await self._request_log.record_failure(
+            await self._request_repository.record_failure(
                 normalized_question,
                 self._provider.request_metadata,
                 exc,
@@ -72,7 +75,7 @@ class AnswerService:
             raise
 
         request_completed_at_ns = time.time_ns()
-        llm_request_id = await self._request_log.record_success(
+        llm_request_id = await self._request_repository.record_success(
             normalized_question,
             self._provider.request_metadata,
             llm_result,
@@ -95,7 +98,7 @@ class AnswerService:
             provider=self._provider.name,
             model=self._provider.model,
         )
-        await self._cache.set(record, seen_at_ns=seen_at_ns)
+        await self._cache_repository.set(record, seen_at_ns=seen_at_ns)
 
         return _response_from_llm(record)
 

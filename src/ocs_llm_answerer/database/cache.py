@@ -39,8 +39,8 @@ def _read_schema_sql(schema_path: Path | None) -> str:
     return files(__package__).joinpath(_SCHEMA_FILE).read_text(encoding="utf-8")
 
 
-class AnswerCache:
-    """基于 SQLite 的小型缓存，用于确定性题目查询。"""
+class AnswerCacheRepository:
+    """基于 SQLite 的答案缓存仓储，负责缓存读写和命中统计。"""
 
     def __init__(self, database_path: Path) -> None:
         self._database_path = database_path

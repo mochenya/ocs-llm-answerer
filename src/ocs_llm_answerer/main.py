@@ -8,8 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from ocs_llm_answerer.answer.service import AnswerService
 from ocs_llm_answerer.api.routes import router
 from ocs_llm_answerer.core.config import Settings, get_settings, load_providers_config
-from ocs_llm_answerer.database.cache import AnswerCache, init_sqlite
-from ocs_llm_answerer.database.llm_requests import LLMRequestLog
+from ocs_llm_answerer.database.cache import AnswerCacheRepository, init_sqlite
+from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
 from ocs_llm_answerer.llm.provider import LLMProvider, create_provider
 
 
@@ -24,9 +24,13 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
         llm_provider = provider or create_provider(
             load_providers_config(app_settings.app_providers_config_path)
         )
-        cache = AnswerCache(app_settings.app_database_path)
-        request_log = LLMRequestLog(app_settings.app_database_path)
-        app.state.answer_service = AnswerService(cache, llm_provider, request_log)
+        cache_repository = AnswerCacheRepository(app_settings.app_database_path)
+        request_repository = LLMRequestRepository(app_settings.app_database_path)
+        app.state.answer_service = AnswerService(
+            cache_repository=cache_repository,
+            provider=llm_provider,
+            request_repository=request_repository,
+        )
         app.state.app_api_key = app_settings.app_api_key
         app.state.app_ocs_answerer_request_type = app_settings.app_ocs_answerer_request_type
         yield

@@ -15,8 +15,8 @@ from ocs_llm_answerer.core.models import (
 from ocs_llm_answerer.database.questions import question_values_from_normalized, upsert_question
 
 
-class LLMRequestLog:
-    """基于 SQLite 的 LLM provider 调用审计日志。"""
+class LLMRequestRepository:
+    """基于 SQLite 的 LLM 调用流水仓储，负责成功和失败调用的审计持久化。"""
 
     def __init__(self, database_path: Path) -> None:
         self._database_path = database_path

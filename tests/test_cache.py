@@ -11,8 +11,8 @@ from ocs_llm_answerer.core.models import (
     LLMProviderMetadata,
     NormalizedQuestion,
 )
-from ocs_llm_answerer.database.cache import AnswerCache, init_sqlite
-from ocs_llm_answerer.database.llm_requests import LLMRequestLog
+from ocs_llm_answerer.database.cache import AnswerCacheRepository, init_sqlite
+from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
 
 
 async def save_call(database_path: Path, record: CachedAnswer) -> int:
@@ -25,7 +25,7 @@ async def save_call(database_path: Path, record: CachedAnswer) -> int:
     Returns:
         已提交的调用流水整数主键。
     """
-    return await LLMRequestLog(database_path).record_success(
+    return await LLMRequestRepository(database_path).record_success(
         NormalizedQuestion(
             question_hash=record.question_hash,
             question=record.question,
@@ -86,7 +86,7 @@ def test_answer_cache_uses_normalized_schema(persisted_answer):
 
     async def exercise_cache():
         """依次验证未命中、写入和两次命中。"""
-        cache = AnswerCache(database_path)
+        cache = AnswerCacheRepository(database_path)
         first_hit = await cache.get(record.question_hash)
         await cache.set(record)
         cached = await cache.get(record.question_hash)
@@ -135,7 +135,7 @@ def test_missing_call_is_rejected_and_question_changes_roll_back(persisted_answe
 
     async def exercise():
         """在实际缓存写入入口触发外键约束。"""
-        cache = AnswerCache(database_path)
+        cache = AnswerCacheRepository(database_path)
         if existing_cache:
             await cache.set(record)
         with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
@@ -156,7 +156,7 @@ def test_cache_can_reference_a_new_call_without_removing_history(persisted_answe
 
     async def exercise():
         """写入两次调用并更新当前缓存来源。"""
-        cache = AnswerCache(database_path)
+        cache = AnswerCacheRepository(database_path)
         await cache.set(record)
         second_id = await save_call(database_path, record)
         updated = record.model_copy(update={"llm_request_id": second_id})
@@ -177,7 +177,7 @@ def test_cache_can_reference_a_new_call_without_removing_history(persisted_answe
 def test_referenced_call_cannot_be_deleted_but_cache_can_be_cleared(persisted_answer):
     """来源流水受外键保护，清理缓存不会删除调用历史。"""
     database_path, record = persisted_answer
-    asyncio.run(AnswerCache(database_path).set(record))
+    asyncio.run(AnswerCacheRepository(database_path).set(record))
 
     with sqlite3.connect(database_path) as db:
         db.execute("PRAGMA foreign_keys = ON")
@@ -191,7 +191,7 @@ def test_referenced_call_cannot_be_deleted_but_cache_can_be_cleared(persisted_an
 def test_deleting_question_keeps_existing_cascade_semantics(persisted_answer):
     """显式删除题目仍同时删除关联缓存与调用，不留下悬空引用。"""
     database_path, record = persisted_answer
-    asyncio.run(AnswerCache(database_path).set(record))
+    asyncio.run(AnswerCacheRepository(database_path).set(record))
 
     with sqlite3.connect(database_path) as db:
         db.execute("PRAGMA foreign_keys = ON")
