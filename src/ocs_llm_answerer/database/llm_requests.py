@@ -7,7 +7,12 @@ from typing import Literal
 
 import aiosqlite
 
-from ocs_llm_answerer.core.models import LLMCallResult, LLMProviderMetadata, NormalizedQuestion
+from ocs_llm_answerer.core.models import (
+    LLMCallResult,
+    LLMProviderMetadata,
+    LLMUsage,
+    NormalizedQuestion,
+)
 from ocs_llm_answerer.database.questions import question_values_from_normalized, upsert_question
 
 
@@ -55,7 +60,25 @@ class LLMRequestLog:
         request_completed_at_ns: int,
         latency_ms: int,
         response_body_raw: str | None = None,
+        result: LLMCallResult | None = None,
     ) -> str:
+        """记录调用或答案校验失败，并保留已经收到的模型响应。
+
+        Args:
+            question: 标准化题目和原始请求快照。
+            metadata: 本次 Provider 配置快照。
+            error: 导致答题失败的原始异常。
+            seen_at_ns: 请求进入服务的时间，单位为 Unix 纳秒。
+            request_started_at_ns: 模型调用开始时间，单位为 Unix 纳秒。
+            request_completed_at_ns: 模型调用结束时间，单位为 Unix 纳秒。
+            latency_ms: 单调时钟测得的调用耗时。
+            response_body_raw: 解析失败等异常携带的原始响应文本。
+            result: 已取得但未通过题型校验的结果，用于保留响应和用量。
+
+        Returns:
+            新调用记录的关联标识。
+        """
+        usage = result.usage if result is not None else LLMUsage()
         return await self._insert(
             question=question,
             metadata=metadata,
@@ -63,15 +86,15 @@ class LLMRequestLog:
             seen_at_ns=seen_at_ns,
             request_started_at_ns=request_started_at_ns,
             request_completed_at_ns=request_completed_at_ns,
-            response_body_raw=response_body_raw,
+            response_body_raw=result.response_body_raw if result is not None else response_body_raw,
             error_type=type(error).__name__,
             error_message=str(error),
-            http_status=_extract_http_status(error),
+            http_status=result.http_status if result is not None else _extract_http_status(error),
             latency_ms=latency_ms,
-            input_tokens=None,
-            output_tokens=None,
-            total_tokens=None,
-            cached_tokens=None,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+            cached_tokens=usage.cached_tokens,
         )
 
     async def _insert(

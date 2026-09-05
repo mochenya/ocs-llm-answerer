@@ -3,7 +3,6 @@ import warnings
 
 from ocs_llm_answerer.core.config import ProviderConfig
 from ocs_llm_answerer.core.models import AnswerRequest
-from ocs_llm_answerer.llm.answer_format import format_answers_for_ocs, normalize_answer_for_ocs
 from ocs_llm_answerer.llm.openai_responses import (
     OpenAIAnswerPayload,
     OpenAIResponsesProvider,
@@ -36,61 +35,15 @@ def test_build_user_input_uses_delimited_sections():
     assert "<options>\nA. 2\nB. 3\n</options>" in user_input
 
 
-def test_normalize_multiple_choice_answer_uses_ocs_separator():
-    request = AnswerRequest(title="选择正确项", type="multiple")
-
-    assert normalize_answer_for_ocs(request, "A,C") == "A#C"
-    assert normalize_answer_for_ocs(request, "AC") == "A#C"
-    assert normalize_answer_for_ocs(request, '["A", "C"]') == "A#C"
-
-
-def test_normalize_completion_json_array_uses_ocs_separator():
-    request = AnswerRequest(title="填空", type="completion")
-
-    assert normalize_answer_for_ocs(request, '["张三", "李四"]') == "张三#李四"
-
-
-def test_normalize_does_not_rewrite_completion_text():
-    request = AnswerRequest(title="填空", type="completion")
-
-    assert normalize_answer_for_ocs(request, "张三，李四") == "张三，李四"
-
-
-def test_normalize_structured_single_answer_uses_first_item():
-    request = AnswerRequest(title="1+1=?", type="single")
-
-    assert format_answers_for_ocs(request, ["A"]) == "A"
-
-
-def test_normalize_structured_multiple_answer_uses_ocs_separator():
-    request = AnswerRequest(title="选择正确项", type="multiple")
-
-    assert format_answers_for_ocs(request, ["A", "C"]) == "A#C"
-    assert format_answers_for_ocs(request, ["A,C"]) == "A#C"
-    assert format_answers_for_ocs(request, ["AC"]) == "A#C"
-
-
-def test_normalize_structured_judgement_answer_is_boolean_string():
-    request = AnswerRequest(title="太阳从东方升起", type="judgement")
-
-    assert format_answers_for_ocs(request, ["True"]) == "true"
-    assert format_answers_for_ocs(request, ["错误"]) == "false"
-
-
-def test_normalize_structured_completion_answer_uses_ocs_separator():
-    request = AnswerRequest(title="填空", type="completion")
-
-    assert format_answers_for_ocs(request, ["张三", "李四"]) == "张三#李四"
-
-
-def test_openai_answer_payload_strips_empty_answers():
+def test_openai_answer_payload_preserves_items_for_business_validation():
+    """结构解析不删除空项，避免填空答案在业务校验前已经发生错位。"""
     payload = OpenAIAnswerPayload(
         answers=[" A ", ""],
         explanation="依据",
         confidence=0.8,
     )
 
-    assert payload.answers == ["A"]
+    assert payload.answers == [" A ", ""]
 
 
 def test_openai_answer_payload_schema_guides_model_output():
@@ -142,7 +95,7 @@ def test_openai_responses_provider_uses_pydantic_text_format():
     assert kwargs["text_format"] is OpenAIAnswerPayload
     assert kwargs["store"] is False
     assert "text" not in kwargs
-    assert result.answer.answer == "A#C"
+    assert result.answer.answers == ["A", "C"]
     assert result.response_body_raw == '{"raw":true}'
     assert result.http_status == 200
     assert result.usage.total_tokens == 30
@@ -163,7 +116,7 @@ def test_openai_responses_provider_falls_back_to_output_text_payload():
 
     result = asyncio.run(provider.answer(AnswerRequest(title="1+1=?", type="single")))
 
-    assert result.answer.answer == "A"
+    assert result.answer.answers == ["A"]
     assert result.answer.explanation == "依据"
     assert result.answer.confidence == 0.8
 

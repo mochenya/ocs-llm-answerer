@@ -36,7 +36,7 @@ class FakeProvider:
 
     async def answer(self, request: AnswerRequest) -> LLMCallResult:
         self.calls += 1
-        answer = LLMAnswer(answer="A", explanation=f"解析：{request.title}", confidence=0.9)
+        answer = LLMAnswer(answers=["A"], explanation=f"解析：{request.title}", confidence=0.9)
         raw_response = {
             "id": "913943893d5c45018725f08b6598ec83",
             "object": "response",
@@ -650,3 +650,73 @@ def test_provider_receives_the_normalized_question_with_original_audit_payload(t
     assert received[0].title == response.json()["question"] == "代码：\n    x = 'a  b'"
     assert received[0].options == ["A. 1", "B. 2"]
     assert received[0].raw_payload_json == raw
+
+
+@pytest.mark.parametrize(
+    ("question_type", "answers"),
+    [
+        ("single", ["A", "B"]),
+        ("judgement", ["maybe"]),
+        ("multiple", ["ABC"]),
+        ("completion", ["第一空", "", "第三空"]),
+    ],
+)
+def test_invalid_model_answer_is_logged_without_entering_cache(tmp_path, question_type, answers):
+    """不同 Provider 都经过统一校验，失败保留响应和用量且后续请求不会命中。"""
+    raw = json.dumps({"answers": answers}, ensure_ascii=False)
+
+    class InvalidProvider(FakeProvider):
+        async def answer(self, request):
+            """返回结构正确但违反题型规则的模型结果。"""
+            result = await super().answer(request)
+            result.answer.answers = answers
+            result.response_body_raw = raw
+            return result
+
+    database_path = tmp_path / "cache.db"
+    provider = InvalidProvider()
+    app = create_app(
+        settings=Settings(app_api_key=None, app_database_path=database_path), provider=provider
+    )
+    payload = {"title": "题目", "type": question_type, "options": ["A. 苹果", "B. 香蕉"]}
+
+    with TestClient(app) as client:
+        first = client.post("/api/v1/answer", json=payload)
+        second = client.post("/api/v1/answer", json=payload)
+
+    assert first.status_code == second.status_code == 502
+    assert first.json()["detail"].startswith("Invalid model answer:")
+    assert provider.calls == 2
+    with sqlite3.connect(database_path) as db:
+        assert db.execute("SELECT COUNT(*) FROM answer_cache").fetchone()[0] == 0
+        rows = db.execute(
+            "SELECT request_status, error_type, response_body_raw, http_status, total_tokens "
+            "FROM llm_requests"
+        ).fetchall()
+    assert rows == [("FAILURE", "InvalidAnswerError", raw, 200, 919)] * 2
+
+
+def test_service_formats_structured_answers_before_caching(tmp_path):
+    """OCS 格式化由服务完成，Provider 可直接返回未排序且重复的答案项。"""
+
+    class MultipleProvider(FakeProvider):
+        async def answer(self, request):
+            """模拟一个不关心 OCS 分隔符的 Provider。"""
+            result = await super().answer(request)
+            result.answer.answers = ["B", "A", "A"]
+            return result
+
+    provider = MultipleProvider()
+    app = create_app(
+        settings=Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"),
+        provider=provider,
+    )
+    payload = {"title": "多选", "type": "multiple", "options": ["A. 苹果", "B. 香蕉"]}
+    with TestClient(app) as client:
+        first = client.post("/api/v1/answer", json=payload)
+        second = client.post("/api/v1/answer", json=payload)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["answer"] == second.json()["answer"] == "A#B"
+    assert second.json()["cache_hit"]
+    assert provider.calls == 1

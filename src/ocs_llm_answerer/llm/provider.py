@@ -20,7 +20,16 @@ class LLMProvider(Protocol):
     model: str
     request_metadata: LLMProviderMetadata
 
-    async def answer(self, request: AnswerRequest) -> LLMCallResult: ...
+    async def answer(self, request: AnswerRequest) -> LLMCallResult:
+        """返回结构化答案，不负责题型语义检查或 OCS 分隔符转换。
+
+        Args:
+            request: 答题层提供的标准化题目。
+
+        Returns:
+            答案项、原始响应及调用元数据。
+        """
+        ...
 
 
 _PROVIDER_FACTORIES = {

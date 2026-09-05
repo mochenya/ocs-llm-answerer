@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
+from ocs_llm_answerer.answer.formatting import InvalidAnswerError
 from ocs_llm_answerer.answer.service import AnswerService
 from ocs_llm_answerer.api.dependencies import (
     get_answer_service,
@@ -68,4 +69,19 @@ async def answer_question(
     payload: AnswerRequest = Depends(parse_answer_request),
     service: AnswerService = Depends(get_answer_service),
 ) -> AnswerResponse:
-    return await service.answer(payload)
+    """返回可供 OCS 使用的答案，并明确报告模型答案不合法的情况。
+
+    Args:
+        payload: 已解析和校验的 OCS 请求。
+        service: 应用启动时组装的答题服务。
+
+    Returns:
+        来自缓存或本次模型调用的合法答案。
+
+    Raises:
+        HTTPException: 模型返回不符合题型规则的答案时响应 502。
+    """
+    try:
+        return await service.answer(payload)
+    except InvalidAnswerError as exc:
+        raise HTTPException(status_code=502, detail=f"Invalid model answer: {exc}") from exc

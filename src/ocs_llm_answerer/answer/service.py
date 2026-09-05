@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import time
 
+from ocs_llm_answerer.answer.formatting import validate_and_format_answer
 from ocs_llm_answerer.answer.normalization import build_normalized_question, normalize_request
 from ocs_llm_answerer.core.models import (
     AnswerRequest,
     AnswerResponse,
     CachedAnswer,
+    LLMCallResult,
 )
 from ocs_llm_answerer.database.cache import AnswerCache
 from ocs_llm_answerer.database.llm_requests import LLMRequestLog
@@ -33,6 +35,7 @@ class AnswerService:
             带有答案来源和缓存命中标志的 OCS 响应。
 
         Raises:
+            InvalidAnswerError: 模型答案不符合题型规则，不写入成功缓存。
             Exception: Provider 调用或持久化失败时向调用方传播错误。
         """
         seen_at_ns = time.time_ns()
@@ -48,8 +51,10 @@ class AnswerService:
 
         request_started_at_ns = time.time_ns()
         started_at = time.perf_counter()
+        llm_result: LLMCallResult | None = None
         try:
             llm_result = await self._provider.answer(request)
+            answer = validate_and_format_answer(request, llm_result.answer.answers)
         except Exception as exc:
             request_completed_at_ns = time.time_ns()
             raw = getattr(exc, "raw_body", None)
@@ -62,6 +67,7 @@ class AnswerService:
                 request_completed_at_ns,
                 _elapsed_ms(started_at),
                 response_body_raw=raw,
+                result=llm_result,
             )
             raise
 
@@ -83,7 +89,7 @@ class AnswerService:
             question_type=normalized_question.question_type,
             options_json=normalized_question.options_json,
             question_raw_json=normalized_question.question_raw_json,
-            answer=llm_answer.answer,
+            answer=answer,
             explanation=llm_answer.explanation,
             confidence=llm_answer.confidence,
             provider=self._provider.name,

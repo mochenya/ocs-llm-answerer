@@ -3,11 +3,10 @@ from __future__ import annotations
 import json
 
 from openai import AsyncOpenAI
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from ocs_llm_answerer.core.config import ProviderConfig
 from ocs_llm_answerer.core.models import AnswerRequest, LLMAnswer, LLMCallResult, LLMUsage
-from ocs_llm_answerer.llm.answer_format import format_answers_for_ocs
 from ocs_llm_answerer.llm.prompting import SYSTEM_PROMPT, build_user_input
 
 
@@ -37,14 +36,6 @@ class OpenAIAnswerPayload(BaseModel):
         description="Confidence score from 0 to 1.",
     )
 
-    @field_validator("answers")
-    @classmethod
-    def answers_not_empty(cls, value: list[str]) -> list[str]:
-        cleaned = [item.strip() for item in value if item.strip()]
-        if not cleaned:
-            raise ValueError("answers must not be empty")
-        return cleaned
-
 
 class OpenAIResponsesProvider:
     """隐藏在 LLMProvider 契约后的 OpenAI Responses API adapter。"""
@@ -62,6 +53,18 @@ class OpenAIResponsesProvider:
         self._extra_body = config.extra_body
 
     async def answer(self, request: AnswerRequest) -> LLMCallResult:
+        """获取结构化模型输出，将题型校验和 OCS 转换交给答题层。
+
+        Args:
+            request: 已标准化的题目请求。
+
+        Returns:
+            未拼接的答案项及原始响应、HTTP 状态和用量。
+
+        Raises:
+            _RawResponseError: 响应不能解析为约定的结构。
+            Exception: SDK 请求失败时保留原始错误。
+        """
         raw_response = await self._client.responses.with_raw_response.parse(
             model=self.model,
             instructions=SYSTEM_PROMPT,
@@ -79,7 +82,7 @@ class OpenAIResponsesProvider:
         except Exception as exc:
             _raise_with_raw(exc, response_body_raw)
         llm_answer = LLMAnswer(
-            answer=format_answers_for_ocs(request, payload.answers),
+            answers=payload.answers,
             explanation=payload.explanation,
             confidence=payload.confidence,
         )

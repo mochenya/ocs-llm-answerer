@@ -97,7 +97,7 @@ cp config/providers.example.json config/providers.json
 | `max_retries` | SDK 最大重试次数，必须大于等于 0。 |
 | `extra_body` | 原样附加到 OpenAI Responses API 请求体，适合兼容网关的厂商参数。 |
 
-当前 `openai_responses` adapter 要求后端兼容 OpenAI Responses API，不是 Chat Completions API。它会请求结构化 JSON 答案，再转换为 OCS 需要的答案字符串。
+当前 `openai_responses` adapter 要求后端兼容 OpenAI Responses API，不是 Chat Completions API。它返回结构化答案项及响应元数据，答题层统一校验题型规则，再转换为 OCS 需要的答案字符串；非法答案会记录为失败且不进入缓存。
 
 ## OCS 请求模式
 

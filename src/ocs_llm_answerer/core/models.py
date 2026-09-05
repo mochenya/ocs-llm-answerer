@@ -63,9 +63,15 @@ class AnswerRequest(BaseModel):
 
 
 class LLMAnswer(BaseModel):
-    """任意 LLM provider 返回的标准化答案。"""
+    """Provider 返回的结构化答案，题型语义由答题层统一校验。
 
-    answer: str = Field(min_length=1)
+    Attributes:
+        answers: 未进行 OCS 拼接的答案项；保留空项以便拒绝不完整的填空答案。
+        explanation: 模型提供的简短依据。
+        confidence: 模型自报的置信度。
+    """
+
+    answers: list[str]
     explanation: str = ""
     confidence: float = Field(ge=0, le=1)
 

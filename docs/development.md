@@ -9,6 +9,8 @@
 - provider API Key 只放在环境变量或 `.env`，不要写入 `config/providers.json`。
 - 修改 OCS 兼容行为前先补测试，尤其是请求体解析、订阅配置和答案格式。
 - SQLite schema 变更需要同步调整缓存、请求流水相关测试。
+- Provider 返回结构化答案项；题型校验和 OCS 格式转换集中在 `answer/formatting.py`，成功缓存只接收通过校验的答案。
+- 新增和实质修改的核心函数使用 Google 风格 Docstring，说明职责、参数、返回值与可预期异常。
 
 ## 常用命令
 
