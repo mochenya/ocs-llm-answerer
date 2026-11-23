@@ -54,6 +54,9 @@ class Settings(BaseSettings):
             "OCS_LLM_QUESTION_OCS_ANSWERER_REQUEST_TYPE",
         ),
     )
+    app_image_enabled: bool = Field(
+        default=False, validation_alias="OCS_LLM_ANSWERER_IMAGE_ENABLED"
+    )
 
     # Settings only models application config. Provider API keys may also live in .env;
     # extra="ignore" lets those keys coexist, while load_environment() exports them

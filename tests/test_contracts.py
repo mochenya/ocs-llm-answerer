@@ -58,10 +58,20 @@ def test_openapi_documents_request_content_types_fields_and_errors(tmp_path: Pat
     assert content["text/plain"]["schema"]["type"] == "string"
     AnswerRequest.model_validate_json(content["text/plain"]["example"])
     request_schema = schema["components"]["schemas"]["AnswerRequest"]
-    assert set(request_schema["properties"]) == {"title", "type", "options"}
+    assert set(request_schema["properties"]) == {
+        "title",
+        "type",
+        "options",
+        "images",
+        "suggestion_title",
+        "suggestion_options",
+    }
+    assert request_schema["properties"]["images"]["items"] == {"type": "string"}
     assert request_schema["required"] == ["title"]
-    assert {"type": "string", "const": ""} in request_schema["properties"]["type"]["anyOf"]
-    assert set(operation["responses"]) == {"200", "401", "422", "502", "503", "504"}
+    assert {"type": "string", "enum": ["", "unknown"]} in (
+        request_schema["properties"]["type"]["anyOf"]
+    )
+    assert set(operation["responses"]) == {"200", "401", "413", "422", "502", "503", "504"}
     assert_local_refs_resolve(schema, schema)
     assert app.openapi() is app.openapi()
 

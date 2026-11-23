@@ -14,6 +14,9 @@ from ocs_llm_answerer.api.schemas import AnswerResponse, ErrorResponse
 router = APIRouter()
 
 
+# OCS 5.4.2 会向配置的答题 URL 发送不带密钥的 HEAD，遇到 405 时回退到 GET。
+# 答题接口原本只接受 POST，因此在同一路径返回空的 200，供卡片判断题库是否可达。
+@router.head("/api/v1/answer", include_in_schema=False)
 @router.head("/")
 async def root_status_probe() -> Response:
     """返回 OCS 状态探针使用的空成功响应。
@@ -48,6 +51,17 @@ async def ocs_answerer_config(request: Request) -> list[dict[str, object]]:
         OCS 可导入的配置数组，其中仅包含公开信息。
     """
 
+    data: dict[str, object] = {
+        "title": "${title}",
+        "type": "${type}",
+        "options": "${options}",
+    }
+    if request.app.state.app_image_enabled:
+        data.update(
+            images={"handler": "return env => env.images"},
+            suggestion_title={"handler": "return env => env.suggestion_title"},
+            suggestion_options={"handler": "return env => env.suggestion_options"},
+        )
     config: dict[str, object] = {
         "name": "OCS LLM Answerer",
         "homepage": str(request.base_url).rstrip("/"),
@@ -55,11 +69,7 @@ async def ocs_answerer_config(request: Request) -> list[dict[str, object]]:
         "method": "post",
         "contentType": "json",
         "headers": {"Content-Type": "application/json"},
-        "data": {
-            "title": "${title}",
-            "type": "${type}",
-            "options": "${options}",
-        },
+        "data": data,
         "handler": "return (res)=> res.code === 1 ? [res.question, res.answer] : undefined",
     }
     request_type = getattr(request.app.state, "app_ocs_answerer_request_type", "fetch")
@@ -76,6 +86,7 @@ async def ocs_answerer_config(request: Request) -> list[dict[str, object]]:
     dependencies=[Depends(verify_api_key)],
     responses={
         401: {"model": ErrorResponse, "description": "访问密钥缺失或无效"},
+        413: {"model": ErrorResponse, "description": "请求体超过 32 MiB"},
         422: {"model": ErrorResponse, "description": "请求编码、JSON 或字段校验失败"},
         502: {"model": ErrorResponse, "description": "上游响应或模型答案无效"},
         503: {"model": ErrorResponse, "description": "上游暂时不可用或持久化失败"},

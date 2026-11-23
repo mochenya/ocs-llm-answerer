@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ocs_llm_answerer.answer.models import OCSQuestionType, Question
+from ocs_llm_answerer.answer.models import OCSQuestionType, Question, QuestionImage
 from ocs_llm_answerer.core.config import ProviderConfig
 from ocs_llm_answerer.llm.errors import ProviderResponseError
 from ocs_llm_answerer.llm.openai_responses import (
@@ -69,7 +69,8 @@ def test_openai_answer_payload_schema_guides_model_output():
     assert confidence_description == "Confidence score from 0 to 1."
 
 
-def test_openai_responses_provider_uses_pydantic_text_format():
+@pytest.mark.parametrize("with_images", [False, True])
+def test_openai_responses_provider_uses_pydantic_text_format(with_images):
     config = ProviderConfig(
         adapter="openai_responses",
         base_url="https://fake.local/v1",
@@ -86,18 +87,39 @@ def test_openai_responses_provider_uses_pydantic_text_format():
     )
     provider._client = fake_client
 
-    result = asyncio.run(
-        provider.answer(
-            Question(
-                title="以下哪些是 Python 可变数据类型？",
-                question_type=OCSQuestionType.MULTIPLE,
-                options=["A. list", "B. tuple", "C. dict", "D. str"],
-            )
-        )
+    images = (
+        [
+            QuestionImage("data:image/png;base64,YQ==", "a"),
+            QuestionImage("data:image/png;base64,Yg==", "b"),
+        ]
+        if with_images
+        else []
     )
+    question = Question(
+        title="以下哪些是 Python 可变数据类型？",
+        question_type=OCSQuestionType.MULTIPLE,
+        options=["A. list", "B. tuple", "C. dict", "D. str"],
+        images=images,
+    )
+    result = asyncio.run(provider.answer(question))
 
     kwargs = fake_client.responses.with_raw_response.kwargs
     assert kwargs["text_format"] is OpenAIAnswerPayload
+    if with_images:
+        assert kwargs["input"] == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": build_user_input(question)},
+                    {"type": "input_text", "text": "[图片1]"},
+                    {"type": "input_image", "image_url": images[0].data_url, "detail": "auto"},
+                    {"type": "input_text", "text": "[图片2]"},
+                    {"type": "input_image", "image_url": images[1].data_url, "detail": "auto"},
+                ],
+            }
+        ]
+    else:
+        assert kwargs["input"] == build_user_input(question)
     assert kwargs["store"] is False
     assert "text" not in kwargs
     assert result.answer.answers == ["A", "C"]

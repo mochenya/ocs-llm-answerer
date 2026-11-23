@@ -4,6 +4,7 @@ import json
 from typing import Never
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
+from openai.types.responses import ResponseInputContentParam, ResponseInputParam
 from pydantic import BaseModel, ConfigDict, Field
 
 from ocs_llm_answerer.answer.models import Question
@@ -42,6 +43,19 @@ class OpenAIAnswerPayload(BaseModel):
         le=1,
         description="Confidence score from 0 to 1.",
     )
+
+
+def _build_responses_input(question: Question) -> str | ResponseInputParam:
+    """在原有答题文本后按占位符编号附上对应的图片。"""
+    text = build_user_input(question)
+    if not question.images:
+        return text
+
+    content: list[ResponseInputContentParam] = [{"type": "input_text", "text": text}]
+    for number, image in enumerate(question.images, start=1):
+        content.append({"type": "input_text", "text": f"[图片{number}]"})
+        content.append({"type": "input_image", "image_url": image.data_url, "detail": "auto"})
+    return [{"role": "user", "content": content}]
 
 
 class OpenAIResponsesProvider:
@@ -88,7 +102,7 @@ class OpenAIResponsesProvider:
             raw_response = await self._client.responses.with_raw_response.parse(
                 model=self.model,
                 instructions=SYSTEM_PROMPT,
-                input=build_user_input(request),
+                input=_build_responses_input(request),
                 store=False,
                 temperature=0.1,
                 max_output_tokens=800,

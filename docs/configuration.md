@@ -17,6 +17,7 @@ cp config/providers.example.json config/providers.json
 | `OCS_LLM_ANSWERER_DATABASE_PATH` | `data/cache.sqlite3` | SQLite 缓存和 LLM 请求流水数据库路径。 |
 | `OCS_LLM_ANSWERER_PROVIDERS_CONFIG_PATH` | `config/providers.json` | provider 运行配置文件路径。 |
 | `OCS_LLM_ANSWERER_OCS_ANSWERER_REQUEST_TYPE` | `fetch` | `/ocs-answerer.json` 输出的 OCS 请求模式，支持 `fetch` 和 `GM_xmlhttpRequest`。 |
+| `OCS_LLM_ANSWERER_IMAGE_ENABLED` | `false` | 设为 `true` 后启用 Base64 图片答题和订阅中的图片字段。 |
 
 示例：
 
@@ -25,6 +26,7 @@ OCS_LLM_ANSWERER_API_KEY=change-me
 OCS_LLM_ANSWERER_DATABASE_PATH=data/cache.sqlite3
 OCS_LLM_ANSWERER_PROVIDERS_CONFIG_PATH=config/providers.json
 OCS_LLM_ANSWERER_OCS_ANSWERER_REQUEST_TYPE=fetch
+OCS_LLM_ANSWERER_IMAGE_ENABLED=false
 OPENAI_API_KEY=sk-...
 ```
 

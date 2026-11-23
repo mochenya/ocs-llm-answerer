@@ -15,6 +15,14 @@ class OCSQuestionType(StrEnum):
     COMPLETION = "completion"
 
 
+@dataclass(frozen=True)
+class QuestionImage:
+    """已校验的图片 Data URL 和解码后内容的 SHA-256。"""
+
+    data_url: str
+    sha256: str
+
+
 class Question(BaseModel):
     """供服务和 Provider 使用的题目，不携带原始 HTTP 载荷。
 
@@ -22,11 +30,13 @@ class Question(BaseModel):
         title: 题干，内部有意义的空白需要保留。
         question_type: 已识别的题型，未知时为 None。
         options: 有序选项列表，传输层的字符串形式应先转换。
+        images: 图片按题目占位符编号排列。
     """
 
     title: str = Field(min_length=1)
     question_type: OCSQuestionType | None = None
     options: list[str] | None = None
+    images: list[QuestionImage] = Field(default_factory=list, repr=False)
 
     @field_validator("title")
     @classmethod

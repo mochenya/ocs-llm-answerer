@@ -16,7 +16,7 @@
 
 返回 OCS AnswererWrapper 可导入的公开题库订阅模板。OCS 会把订阅结果当数组展开，所以这里必须返回数组，不能返回单个对象。该接口无需鉴权，始终不返回访问密钥。
 
-响应示例：
+启用图片答题时的订阅响应示例：
 
 ```json
 [
@@ -32,7 +32,10 @@
     "data": {
       "title": "${title}",
       "type": "${type}",
-      "options": "${options}"
+      "options": "${options}",
+      "images": { "handler": "return env => env.images" },
+      "suggestion_title": { "handler": "return env => env.suggestion_title" },
+      "suggestion_options": { "handler": "return env => env.suggestion_options" }
     },
     "handler": "return (res)=> res.code === 1 ? [res.question, res.answer] : undefined"
   }
@@ -40,6 +43,10 @@
 ```
 
 未配置 `OCS_LLM_ANSWERER_API_KEY` 时可直接使用订阅。配置了密钥时，需将模板复制到 OCS 自定义题库配置，并在 `headers` 中手动填写 `X-API-Key`；密钥不会通过公开订阅分发。
+
+图片答题默认关闭，订阅只映射 `title`、`type` 和 `options`。启用时，在 `.env` 中设置 `OCS_LLM_ANSWERER_IMAGE_ENABLED=true`，重启服务并在 OCS 高级设置中打开「图片题优化」。
+
+已在 OCS 中粘贴过模板的用户，可以重新打开 `/ocs-answerer.json`，把新模板复制到「通用 → 全局设置 → 题库配置」，填回所需的访问密钥后保存。
 
 ## `POST /api/v1/answer`
 
@@ -69,8 +76,11 @@ Content-Type: application/json
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `title` | `string` | 题目文本，必填，不能是空字符串或纯空白。 |
-| `type` | `string` | 题型，可选。空字符串会按未知题型处理。 |
+| `type` | `string` | 题型，可选。空字符串和 `unknown` 会按未知题型处理。 |
 | `options` | `string[]` 或 `string` | 选项，可选。支持数组和 OCS 常见的换行字符串。 |
+| `images` | `string[]` | 可选的有序图片数组，默认 `[]`。每项是完整的 Base64 Data URL。 |
+| `suggestion_title` | `string` | 可选的题干，图片位置以 `[图片N]` 标记，默认空字符串。 |
+| `suggestion_options` | `string` | 可选的换行选项文本，图片位置以 `[图片N]` 标记，默认空字符串。 |
 
 支持的题型：
 
@@ -81,9 +91,21 @@ Content-Type: application/json
 | `judgement` | 判断题，答案为 `true` 或 `false` |
 | `completion` | 填空题，多空答案使用 `#` 拼接 |
 
-未知的非空题型会返回 `422`。
+其余非空题型值会返回 `422`。
 
 题干和选项只统一换行并清理外围空白，内部空格、缩进和换行会保留。模型输入与缓存身份使用相同的标准化规则，原始请求体单独用于审计。
+
+### 图片题
+
+图片和文本放在同一次 Responses 请求中，当前配置的模型需要支持图像输入和结构化输出。`[图片N]` 对应 `images[N - 1]`。有图时，非空白的 `suggestion_title` 和 `suggestion_options` 分别优先于原字段。建议选项标准化后的数量需与原选项相同。纯文字题使用原字段。
+
+接口按图片字节识别 PNG、JPEG 或 WebP。每题最多 16 张，单张解码后最多 5 MiB，全部图片解码后合计最多 16 MiB，HTTP 请求体最多 32 MiB。模型接收完整 Data URL，原始图片 URL 由 OCS 在浏览器端读取。
+
+关闭时，仍在使用图文模板的客户端若提交了非空的 `images`，接口会在调用模型前返回 `422` 和 `Image answering is disabled`。重新导入订阅可恢复为文字请求。
+
+图片题缓存键包含按顺序排列的图片内容摘要。题目记录和模型调用流水继续保存原始请求 JSON，其中包含收到的 Base64。
+
+如果上游网关返回 `effort: requires a native Responses target`，检查当前 Provider 的 `extra_body.effort`。使用网关的兼容路由时，可在对应 Provider 配置中移除该字段，再用同一张图验证答题。上游的具体报错可在模型调用流水中查看。
 
 模型答案在进入缓存前统一校验：单选和判断题必须恰好有一项，判断值必须能归一化为 `true/false`；选择题编号必须在已提供的选项范围内，也允许精确匹配的完整选项文本。多选会去重并按编号排序。填空保留每项内容，任何空项都会被拒绝，避免答案错位。缺少选项时无法检查编号上界；未知题型只校验答案非空。
 
@@ -94,6 +116,7 @@ Content-Type: application/json
 | 状态码 | 情况 | `detail` |
 | --- | --- | --- |
 | `401` | 本服务访问密钥缺失或无效 | `Invalid API key` |
+| `413` | HTTP 请求体超过 32 MiB | `Answer request body exceeds 32 MiB` |
 | `422` | 编码、JSON 或请求字段无效 | 编码/JSON 错误字符串，或字段校验错误列表 |
 | `502` | 模型答案违反题型规则 | `Invalid model answer: ...` |
 | `502` | 上游错误响应或结构解析失败 | `Invalid model provider response` |

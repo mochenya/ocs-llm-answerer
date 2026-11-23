@@ -490,21 +490,27 @@ def test_health_endpoint(tmp_path):
     assert response.json() == {"status": "ok"}
 
 
-def test_root_head_endpoint_supports_ocs_status_probe(tmp_path):
+@pytest.mark.parametrize("path", ["/", "/api/v1/answer"])
+def test_head_endpoints_support_ocs_status_probe(tmp_path, path):
     app = create_app(
-        settings=Settings(app_database_path=tmp_path / "cache.sqlite3"),
+        settings=Settings(app_api_key="secret", app_database_path=tmp_path / "cache.sqlite3"),
         provider=FakeProvider(),
     )
 
     with TestClient(app) as client:
-        response = client.head("/?t=1780724765342")
+        response = client.head(path, params={"t": "1780724765342"})
 
     assert response.status_code == 200
+    assert response.content == b""
 
 
 def test_ocs_answerer_config_is_array_and_maps_response(tmp_path):
     app = create_app(
-        settings=Settings(app_api_key="secret", app_database_path=tmp_path / "cache.sqlite3"),
+        settings=Settings(
+            app_api_key="secret",
+            app_database_path=tmp_path / "cache.sqlite3",
+            app_image_enabled=True,
+        ),
         provider=FakeProvider(),
     )
 
@@ -516,6 +522,14 @@ def test_ocs_answerer_config_is_array_and_maps_response(tmp_path):
     assert isinstance(config, list)
     assert config[0]["url"] == "http://testserver/api/v1/answer"
     assert config[0]["headers"] == {"Content-Type": "application/json"}
+    assert config[0]["data"] == {
+        "title": "${title}",
+        "type": "${type}",
+        "options": "${options}",
+        "images": {"handler": "return env => env.images"},
+        "suggestion_title": {"handler": "return env => env.suggestion_title"},
+        "suggestion_options": {"handler": "return env => env.suggestion_options"},
+    }
     assert "type" not in config[0]
     assert config[0]["handler"] == (
         "return (res)=> res.code === 1 ? [res.question, res.answer] : undefined"

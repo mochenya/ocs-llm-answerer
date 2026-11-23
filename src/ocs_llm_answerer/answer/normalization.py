@@ -76,6 +76,8 @@ def build_question_hash(request: Question) -> tuple[str, list[str] | None]:
         "type": request.question_type or "",
         "options": normalized_options,
     }
+    if request.images:
+        payload["image_sha256"] = [image.sha256 for image in request.images]
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest(), normalized_options
 

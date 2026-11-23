@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ocs_llm_answerer.answer.models import OCSQuestionType
+from ocs_llm_answerer.api.images import MAX_IMAGES
 
 
 class AnswerRequest(BaseModel):
@@ -13,6 +14,9 @@ class AnswerRequest(BaseModel):
     title: str = Field(min_length=1)
     question_type: OCSQuestionType | None = Field(default=None, alias="type")
     options: list[str] | str | None = None
+    images: list[str] = Field(default_factory=list, max_length=MAX_IMAGES, repr=False)
+    suggestion_title: str = ""
+    suggestion_options: str = ""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
@@ -35,19 +39,21 @@ class AnswerRequest(BaseModel):
         return value
 
     @field_validator(
-        "question_type", mode="before", json_schema_input_type=OCSQuestionType | Literal[""] | None
+        "question_type",
+        mode="before",
+        json_schema_input_type=OCSQuestionType | Literal["", "unknown"] | None,
     )
     @classmethod
-    def blank_question_type_is_unknown(cls, value: object) -> object:
-        """兼容 OCS 将未知题型表示为空字符串的情况。
+    def normalize_unknown_question_type(cls, value: object) -> object:
+        """兼容 OCS 为空字符串或 unknown 的题型。
 
         Args:
             value: 尚未进行枚举校验的外部输入。
 
         Returns:
-            空字符串转换为 None，其他输入保持原样。
+            两种未知题型转换为 None，其他输入保持原样。
         """
-        return None if value == "" else value
+        return None if value in ("", "unknown") else value
 
 
 class AnswerResponse(BaseModel):

@@ -63,6 +63,7 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
                 await llm_provider.aclose()
 
     app = FastAPI(title="OCS LLM Answerer Backend", lifespan=lifespan)
+    app.state.app_image_enabled = app_settings.app_image_enabled
     register_error_handlers(app)
     # OCS 页面运行在 chaoxing.com，但会从浏览器里调用本机 localhost 服务。
     # 如果没有 CORS，后端日志可能已经是 200 OK，页面仍会因为浏览器拦截响应而报
