@@ -6,16 +6,16 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-from ocs_llm_answerer.answer.models import OCSQuestionType, Question
+from ocs_llm_answerer.answer.models import LLMCallAudit, OCSQuestionType, Question
 from ocs_llm_answerer.answer.normalization import build_normalized_question
 from ocs_llm_answerer.answer.service import AnswerService
 from ocs_llm_answerer.core.config import ProviderConfig
 from ocs_llm_answerer.database.cache import AnswerCacheRepository
 from ocs_llm_answerer.database.connection import init_sqlite
 from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
+from ocs_llm_answerer.llm.adapters.openai_responses import OpenAIResponsesClient
 from ocs_llm_answerer.llm.errors import ProviderTimeoutError, ProviderUnavailableError
-from ocs_llm_answerer.llm.models import LLMAnswer, LLMCallResult
-from ocs_llm_answerer.llm.openai_responses import OpenAIResponsesProvider
+from ocs_llm_answerer.llm.factory import provider_metadata_from_config
 
 
 @pytest.mark.parametrize(
@@ -31,7 +31,7 @@ from ocs_llm_answerer.llm.openai_responses import OpenAIResponsesProvider
     ],
 )
 def test_real_sdk_errors_keep_raw_response_in_audit(tmp_path, status_code, raw_body):
-    """通过模拟 HTTP 传输验证 SDK、服务和 SQLite 全链路保留非 JSON 失败现场。"""
+    """通过模拟 HTTP 传输验证 SDK、服务和 SQLite 全链路保留非 JSON 失败现场，且不误触发纠正重试。"""
     database_path = tmp_path / "audit.db"
     config = ProviderConfig(
         adapter="openai_responses",
@@ -48,9 +48,9 @@ def test_real_sdk_errors_keep_raw_response_in_audit(tmp_path, status_code, raw_b
     async def exercise():
         """使用真实 SDK 调用路径，将异常写入临时数据库。"""
         await init_sqlite(database_path)
-        provider = OpenAIResponsesProvider("fake", config, "fake-key")
-        await provider._client.close()
-        provider._client = AsyncOpenAI(
+        client = OpenAIResponsesClient("fake", config, "fake-key")
+        await client._client.close()
+        client._client = AsyncOpenAI(
             api_key="fake-key",
             base_url=config.base_url,
             max_retries=0,
@@ -58,7 +58,7 @@ def test_real_sdk_errors_keep_raw_response_in_audit(tmp_path, status_code, raw_b
         )
         service = AnswerService(
             cache_repository=AnswerCacheRepository(database_path),
-            provider=provider,
+            llm_client=client,
             request_repository=LLMRequestRepository(database_path),
         )
         try:
@@ -70,7 +70,7 @@ def test_real_sdk_errors_keep_raw_response_in_audit(tmp_path, status_code, raw_b
             assert error.value.status_code == status_code
             assert error.value.__cause__ is not None
         finally:
-            await provider._client.close()
+            await client._client.close()
 
     asyncio.run(exercise())
 
@@ -88,28 +88,30 @@ def test_real_sdk_errors_keep_raw_response_in_audit(tmp_path, status_code, raw_b
 def test_raw_text_is_allowed_while_application_json_is_validated(tmp_path):
     """原文可以自由存储，应用生成的 JSON 字段仍由数据库保证合法性。"""
     database_path = tmp_path / "audit.db"
-    metadata = ProviderConfig(
-        adapter="openai_responses",
-        base_url="https://test.invalid/v1",
-        api_key_env="FAKE_API_KEY",
-        model="fake-model",
-    ).to_metadata()
+    metadata = provider_metadata_from_config(
+        ProviderConfig(
+            adapter="openai_responses",
+            base_url="https://test.invalid/v1",
+            api_key_env="FAKE_API_KEY",
+            model="fake-model",
+        )
+    )
 
     async def exercise():
         """写入带有非 JSON 原文的成功调用记录。"""
         await init_sqlite(database_path)
-        await LLMRequestRepository(database_path).record_success(
-            build_normalized_question(Question(title="测试")),
-            metadata,
-            LLMCallResult(
-                answer=LLMAnswer(answers=["A"], confidence=0.9),
+        await LLMRequestRepository(database_path).record(
+            LLMCallAudit(
+                question=build_normalized_question(Question(title="测试")),
+                metadata=metadata,
+                status="SUCCESS",
+                seen_at_ns=1,
+                request_started_at_ns=2,
+                request_completed_at_ns=3,
+                latency_ms=1,
                 response_body_raw="原始文本\n第二行",
                 http_status=200,
-            ),
-            seen_at_ns=1,
-            request_started_at_ns=2,
-            request_completed_at_ns=3,
-            latency_ms=1,
+            )
         )
 
     asyncio.run(exercise())
@@ -146,36 +148,25 @@ def test_sdk_transport_errors_use_provider_contract(
     )
 
     def respond(request: httpx.Request) -> httpx.Response:
-        """模拟网络故障，禁止发出真实请求。
-
-        Args:
-            request: SDK 构造的请求。
-
-        Raises:
-            httpx.TransportError: 参数化的网络故障。
-        """
         raise transport_error("injected transport failure", request=request)
 
     async def exercise() -> None:
-        """运行 SDK、服务和临时数据库调用链，并始终关闭客户端。"""
         await init_sqlite(path)
-        provider = OpenAIResponsesProvider("fake", config, "fake-key")
-        await provider.aclose()
-        provider._client = AsyncOpenAI(
+        client = OpenAIResponsesClient("fake", config, "fake-key")
+        await client.aclose()
+        client._client = AsyncOpenAI(
             api_key="fake-key",
             base_url=config.base_url,
             max_retries=0,
             http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
         )
         try:
-            service = AnswerService(
-                AnswerCacheRepository(path), provider, LLMRequestRepository(path)
-            )
+            service = AnswerService(AnswerCacheRepository(path), client, LLMRequestRepository(path))
             with pytest.raises(provider_error) as raised:
                 await service.answer(Question(title="题目"))
             assert raised.value.__cause__ is not None
         finally:
-            await provider.aclose()
+            await client.aclose()
 
     asyncio.run(exercise())
     with sqlite3.connect(path) as db:

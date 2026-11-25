@@ -24,6 +24,7 @@
 - [OCS 配置示例](#ocs-配置示例)
 - [常用配置](#常用配置)
 - [工作原理](#工作原理)
+- [项目架构](#项目架构)
 - [技术栈](#技术栈)
 - [文档](#文档)
 - [项目信息](#项目信息)
@@ -33,10 +34,11 @@
 
 | 能力 | 说明 |
 | --- | --- |
-| OCS 兼容 | 提供答题接口和可导入的题库订阅配置。 |
-| 智能回退 | 先查 SQLite 缓存，未命中再请求 LLM，避免同题重复消耗 token。 |
-| 结构化输出 | 通过 OpenAI SDK 的 Responses API 和 Pydantic 解析模型答案。 |
-| 请求审计 | 记录 provider、模型、原始响应、状态、耗时和 token 用量。 |
+| OCS 兼容 | 提供答题接口、图片题支持与可导入的题库订阅配置。 |
+| 智能缓存 | 先查 SQLite（WAL 模式）缓存，未命中再请求 LLM，避免同题重复消耗 token。 |
+| 结构化与纠错重试 | 支持 OpenAI Responses API 结构化输出与代码块容错解析；解析或题型校验失败时在同一会话中保留原响应（含思考块）并追加错误反馈重试。 |
+| 请求审计 | 按每次上游调用 1:1 记录配置快照、原始响应、状态、耗时和 token 用量。 |
+| 模块解耦 | 严格单向分层架构（`core ← llm ← answer ← api/database`），业务提示词与底层模型协议彻底分离。 |
 | 本地优先 | 默认监听 `127.0.0.1:8000`，密钥通过 `.env` 和环境变量管理。 |
 
 ## 快速上手
@@ -144,6 +146,8 @@ OCS_LLM_ANSWERER_API_KEY=
 OCS_LLM_ANSWERER_DATABASE_PATH=data/cache.sqlite3
 OCS_LLM_ANSWERER_PROVIDERS_CONFIG_PATH=config/providers.json
 OCS_LLM_ANSWERER_OCS_ANSWERER_REQUEST_TYPE=fetch
+OCS_LLM_ANSWERER_IMAGE_ENABLED=false
+OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS=3
 OPENAI_API_KEY=
 ```
 
@@ -172,17 +176,53 @@ OPENAI_API_KEY=
 
 ```mermaid
 flowchart LR
-    A[OCS 网课助手] --> B[本地答题服务]
-    B --> C[标准化题目并计算哈希]
-    C --> D{SQLite 缓存命中?}
-    D -- 是 --> E[直接返回答案]
-    D -- 否 --> F[调用 LLM provider]
-    F --> G[记录 LLM 调用流水]
-    G --> H[写入答案缓存]
-    H --> E
+    A["OCS 网课助手"] --> B["API 入站防腐层"]
+    B --> C["标准化题目与哈希"]
+    C --> D{"SQLite WAL 缓存命中?"}
+    D -- 是 --> E["返回答案"]
+    D -- 否 --> F["创建单请求 LLMSession"]
+    F --> G["调用 LLM 适配器并容错解析"]
+    G --> H["校验题型规则与格式化"]
+    H --> I{"解析或题型失败?"}
+    I -- "是且未达上限" --> J["记录失败流水并追加错误反馈"]
+    J --> G
+    I -- "否(成功)" --> K["记录成功流水"]
+    K --> L["写入答案缓存"]
+    L --> E
 ```
 
-服务启动时会初始化 SQLite schema，并根据 `config/providers.json` 创建当前启用的 LLM provider。每次答题请求会统一换行、去除外围空白并整理选项列表，同时保留正文内部的空格、缩进、换行和选项顺序；纯空白题干会被拒绝。模型输入与缓存使用同一份标准化内容，SHA-256 哈希包含规则版本、题目、题型和选项。缓存命中时直接返回答案；缓存未命中时请求 LLM，并把调用配置、原始响应、状态、耗时和 token 用量写入数据库。原始 OCS 请求另行保留用于审计。
+服务启动时会初始化 SQLite（默认启用 `WAL` 日志模式与 `busy_timeout`），并根据 `config/providers.json` 创建当前启用的 `LLMClient`。每次答题请求先经过 `api/` 防腐层解析 OCS 载荷（兼容 `text/plain` JSON 与可选 Base64 图片），再统一换行、去除外围空白并整理选项，同时保留正文内部空白与选项顺序。缓存命中时直接返回答案；未命中时为本次请求创建独立的 `LLMSession`（原样保留上游 `output` 数组中的 `reasoning` 思考块与 `phase` 字段），调用模型并执行容错 JSON 解析与题型语义校验。若输出解析或题型校验失败，会在同一会话中追加错误原因重试（默认最多尝试 3 次，可由 `OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS` 控制），每次上游调用均独立记录到 `llm_requests`，仅通过校验的结果才会写入 `answer_cache`。
+
+## 项目架构
+
+代码采用严格单向无环分层（由 `tests/test_architecture.py` 静态守护），底层模型能力与答题业务完全解耦，由 `main.py` 作为组合根（Composition Root）统一装配：
+
+```mermaid
+flowchart TD
+    CLI["cli.py"] --> MAIN["main.py 组合根"]
+    MAIN --> API["api/ 入站 HTTP 防腐层"]
+    MAIN --> ANSWER["answer/ 答题核心业务"]
+    MAIN --> DB["database/ SQLite 仓储适配"]
+    MAIN --> LLM["llm/ 通用模型能力层"]
+    MAIN --> CORE["core/ 纯配置"]
+
+    API --> ANSWER
+    DB --> ANSWER
+    ANSWER --> LLM
+    LLM --> CORE
+```
+
+| 目录 / 模块 | 职责边界 |
+| --- | --- |
+| `src/ocs_llm_answerer/core/` | 纯环境变量与 `providers.json` 配置校验，零内部业务依赖。 |
+| `src/ocs_llm_answerer/llm/` | 业务无关的通用模型能力层：定义 `LLMClient` / `LLMSession` 协议、多模态输入原语（`TextPart`/`ImagePart`/`UserInput`）、泛型结果、容错 JSON/代码块解析器与客户端工厂。 |
+| `src/ocs_llm_answerer/llm/adapters/` | 具体上游协议适配器（当前为 `openai_responses.py`，负责维护单请求原生消息数组与异常转换，便于后续扩展 `openai_chat_completions` 等协议）。 |
+| `src/ocs_llm_answerer/answer/` | 答题核心领域层：题目标准化与哈希、OCS 提示词与多模态资源构建（`prompting.py` / `prompts/`）、唯一结构化载荷 `AnswerPayload`、题型校验格式化、最小仓储协议（`ports.py`）与纠错重试编排（`service.py`）。 |
+| `src/ocs_llm_answerer/database/` | SQLite 出站仓储适配层：统一管理 `WAL`、`busy_timeout`、外键约束及 `AnswerCacheRepository` / `LLMRequestRepository` 两个独立短事务实现。 |
+| `src/ocs_llm_answerer/api/` | OCS HTTP 入站防腐层：处理 `text/plain` 载荷、Base64 图片校验、`suggestion_*` 归约、鉴权、OpenAPI 补全与脱敏错误映射。 |
+| `src/ocs_llm_answerer/main.py` | 应用组合根与 FastAPI `lifespan` 生命周期管理，明确托管自有资源的创建与关闭。 |
+
+更多分层契约、事务与失败边界详见 [docs/development.md](docs/development.md)。
 
 ## 技术栈
 

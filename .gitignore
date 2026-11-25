@@ -20,6 +20,8 @@ config/providers.json
 data/*.sqlite
 data/*.sqlite3
 data/*.db
+data/*-wal
+data/*-shm
 
 # Local agent instructions and tool state
 AGENTS.md

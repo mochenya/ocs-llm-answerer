@@ -109,7 +109,7 @@ Content-Type: application/json
 
 模型答案在进入缓存前统一校验：单选和判断题必须恰好有一项，判断值必须能归一化为 `true/false`；选择题编号必须在已提供的选项范围内，也允许精确匹配的完整选项文本。多选会去重并按编号排序。填空保留每项内容，任何空项都会被拒绝，避免答案错位。缺少选项时无法检查编号上界；未知题型只校验答案非空。
 
-不符合题型规则的模型答案返回 `502`，JSON 示例为 `{"detail":"Invalid model answer: single requires exactly one answer"}`。失败会记录原始响应和已取得的用量，不写入答案缓存。
+若模型输出文本无法解析为目标 JSON 或违反题型规则，服务会在同一会话中保留上轮输出并追加错误原因重试，默认最多尝试 3 次（可通过 `OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS` 配置），每次上游调用均独立记录流水。全部尝试仍不合规时返回 `502`，JSON 示例为 `{"detail":"Invalid model answer: single requires exactly one answer"}`，不写入答案缓存。
 
 ### 错误响应
 

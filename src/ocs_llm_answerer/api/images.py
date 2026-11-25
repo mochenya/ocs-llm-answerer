@@ -37,7 +37,8 @@ def parse_images(data_urls: list[str]) -> list[QuestionImage]:
             raise ValueError(f"{field} must contain PNG, JPEG or WebP bytes")
         images.append(
             QuestionImage(
-                data_url=f"data:{media_type};base64,{encoded}",
+                media_type=media_type,
+                base64_data=encoded,
                 sha256=hashlib.sha256(image_bytes).hexdigest(),
             )
         )

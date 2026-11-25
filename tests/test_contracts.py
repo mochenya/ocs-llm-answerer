@@ -13,21 +13,18 @@ from ocs_llm_answerer.api.schemas import AnswerRequest
 from ocs_llm_answerer.core.config import Settings
 from ocs_llm_answerer.database.cache import AnswerCacheRepository
 from ocs_llm_answerer.llm.errors import (
+    ProviderOutputError,
     ProviderResponseError,
     ProviderTimeoutError,
     ProviderUnavailableError,
 )
+from ocs_llm_answerer.llm.models import TextPart
 from ocs_llm_answerer.main import create_app
-from tests.fakes import StubProvider
+from tests.fakes import StubLLMClient
 
 
 def assert_local_refs_resolve(value: object, document: dict[str, Any]) -> None:
-    """遍历 OpenAPI 文档并断言每个本地 JSON Pointer 都存在。
-
-    Args:
-        value: 当前待遍历的节点。
-        document: 用于解析本地引用的完整文档。
-    """
+    """遍历 OpenAPI 文档并断言每个本地 JSON Pointer 都存在。"""
     if isinstance(value, dict):
         reference = value.get("$ref")
         if isinstance(reference, str) and reference.startswith("#/"):
@@ -44,7 +41,7 @@ def assert_local_refs_resolve(value: object, document: dict[str, Any]) -> None:
 def test_openapi_documents_request_content_types_fields_and_errors(tmp_path: Path) -> None:
     """手动解析请求仍具有完整的文档契约，枚举引用指向组件而非悬空 $defs。"""
     app = create_app(
-        Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"), StubProvider()
+        Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"), StubLLMClient()
     )
     with TestClient(app) as client:
         response = client.get("/openapi.json")
@@ -80,8 +77,8 @@ def test_openapi_documents_request_content_types_fields_and_errors(tmp_path: Pat
 def test_both_transports_preserve_exact_raw_audit(tmp_path: Path, content_type: str) -> None:
     """接口映射不改变成功字段、题目语义或原始载荷，包括被 schema 忽略的字段。"""
     path = tmp_path / "cache.db"
-    provider = StubProvider()
-    app = create_app(Settings(app_api_key=None, app_database_path=path), provider)
+    llm_client = StubLLMClient()
+    app = create_app(Settings(app_api_key=None, app_database_path=path), llm_client)
     raw = '{ "title":"  1+1=?  ", "type":"single", "options":" A. 2\\nB. 3 ", "extra":42 }'
     with TestClient(app) as client:
         response = client.post(
@@ -99,7 +96,9 @@ def test_both_transports_preserve_exact_raw_audit(tmp_path: Path, content_type: 
         "cache_hit",
     }
     assert response.json()["code"] == 1
-    assert provider.received[0].options == ["A. 2", "B. 3"]
+    first_part = llm_client.received[0].parts[0]
+    assert isinstance(first_part, TextPart)
+    assert "<options>\nA. 2\nB. 3\n</options>" in first_part.text
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT question_raw_json FROM questions").fetchone()[0] == raw
         assert db.execute("SELECT question_raw_json FROM llm_requests").fetchone()[0] == raw
@@ -115,13 +114,15 @@ def test_invalid_transport_is_rejected_before_provider(
     expected_detail: str,
 ) -> None:
     """编码和 JSON 语法失败继续返回原有 detail 字符串。"""
-    provider = StubProvider()
-    app = create_app(Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"), provider)
+    llm_client = StubLLMClient()
+    app = create_app(
+        Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"), llm_client
+    )
     with TestClient(app) as client:
         response = client.post("/api/v1/answer", content=body)
     assert response.status_code == 422
     assert response.json() == {"detail": expected_detail}
-    assert not provider.received
+    assert not llm_client.received
 
 
 @pytest.mark.parametrize(
@@ -138,6 +139,11 @@ def test_invalid_transport_is_rejected_before_provider(
             502,
             "Invalid model provider response",
         ),
+        (
+            ProviderOutputError("private parse", raw_body="private raw", status_code=200),
+            502,
+            "Invalid model provider response",
+        ),
     ],
 )
 def test_provider_errors_map_without_leaking_upstream_data(
@@ -148,7 +154,10 @@ def test_provider_errors_map_without_leaking_upstream_data(
 ) -> None:
     """上游内部错误保留在审计，公开 HTTP 响应不暴露模型服务诊断文本。"""
     path = tmp_path / "cache.db"
-    app = create_app(Settings(app_api_key=None, app_database_path=path), StubProvider(error=error))
+    app = create_app(
+        Settings(app_api_key=None, app_database_path=path),
+        StubLLMClient(error=error),
+    )
     with TestClient(app) as client:
         response = client.post("/api/v1/answer", json={"title": "题目"})
     assert response.status_code == status
@@ -163,7 +172,7 @@ def test_unknown_programming_error_stays_500(tmp_path: Path) -> None:
     """未分类的编程异常不能被统一误报为模型服务故障。"""
     app = create_app(
         Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"),
-        StubProvider(error=ValueError("unexpected internal bug")),
+        StubLLMClient(error=ValueError("unexpected internal bug")),
     )
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post("/api/v1/answer", json={"title": "题目"})
@@ -177,8 +186,8 @@ def test_persistence_failure_preserves_independent_success_audit(
 ) -> None:
     """真实 SQLite 触发器制造写入故障，证明成功流水与缓存不是同一事务。"""
     path = tmp_path / "cache.db"
-    provider = StubProvider()
-    app = create_app(Settings(app_api_key=None, app_database_path=path), provider)
+    llm_client = StubLLMClient()
+    app = create_app(Settings(app_api_key=None, app_database_path=path), llm_client)
     raw = '{ "title":"题目", "trace":"exact original" }'
     with TestClient(app) as client:
         with sqlite3.connect(path) as db:
@@ -203,7 +212,7 @@ def test_failed_audit_preserves_provider_http_mapping(
     path = tmp_path / "cache.db"
     app = create_app(
         Settings(app_api_key=None, app_database_path=path),
-        StubProvider(error=ProviderTimeoutError("timeout")),
+        StubLLMClient(error=ProviderTimeoutError("timeout")),
     )
     with TestClient(app) as client:
         with sqlite3.connect(path) as db:
@@ -218,12 +227,14 @@ def test_failed_audit_preserves_provider_http_mapping(
 
 def test_cache_read_failure_maps_to_503(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """缓存读取失败使用仓储错误契约，且不会继续调用模型。"""
-    provider = StubProvider()
-    app = create_app(Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"), provider)
+    llm_client = StubLLMClient()
+    app = create_app(
+        Settings(app_api_key=None, app_database_path=tmp_path / "cache.db"), llm_client
+    )
     monkeypatch.setattr(
         AnswerCacheRepository, "get", AsyncMock(side_effect=RepositoryError("failed"))
     )
     with TestClient(app) as client:
         response = client.post("/api/v1/answer", json={"title": "题目"})
     assert response.status_code == 503
-    assert provider.received == []
+    assert llm_client.received == []

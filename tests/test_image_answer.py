@@ -6,8 +6,9 @@ from fastapi.testclient import TestClient
 
 from ocs_llm_answerer.api import dependencies, images
 from ocs_llm_answerer.core.config import Settings
+from ocs_llm_answerer.llm.models import ImagePart, TextPart
 from ocs_llm_answerer.main import create_app
-from tests.fakes import StubProvider
+from tests.fakes import StubLLMClient
 
 BLUE_PNG = (
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAA"
@@ -26,20 +27,20 @@ BLUE_WEBP = (
 @pytest.fixture
 def image_answer_api(tmp_path):
     path = tmp_path / "image-test.sqlite3"
-    provider = StubProvider()
+    llm_client = StubLLMClient()
     settings = Settings(app_api_key=None, app_database_path=path, app_image_enabled=True)
-    app = create_app(settings, provider)
+    app = create_app(settings, llm_client)
     with TestClient(app) as client:
-        yield client, provider, path
+        yield client, llm_client, path
 
 
 def test_image_answering_is_off_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("OCS_LLM_ANSWERER_IMAGE_ENABLED", raising=False)
     path = tmp_path / "text-only.sqlite3"
-    provider = StubProvider()
+    llm_client = StubLLMClient()
     settings = Settings(_env_file=None, app_api_key=None, app_database_path=path)
 
-    with TestClient(create_app(settings, provider)) as client:
+    with TestClient(create_app(settings, llm_client)) as client:
         [template] = client.get("/ocs-answerer.json").json()
         disabled = client.post("/api/v1/answer", json={"title": "看图", "images": [BLUE_PNG]})
         text = client.post("/api/v1/answer", json={"title": "纯文字", "images": []})
@@ -48,7 +49,9 @@ def test_image_answering_is_off_by_default(tmp_path, monkeypatch):
     assert disabled.status_code == 422
     assert disabled.json() == {"detail": "Image answering is disabled"}
     assert text.status_code == 200
-    assert [question.title for question in provider.received] == ["纯文字"]
+    assert len(llm_client.received) == 1
+    assert isinstance(llm_client.received[0].parts[0], TextPart)
+    assert "题干：纯文字" in llm_client.received[0].parts[0].text
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT question FROM questions").fetchall() == [("纯文字",)]
 
@@ -79,7 +82,7 @@ def test_image_answering_is_off_by_default(tmp_path, monkeypatch):
     ],
 )
 def test_selects_effective_question_and_keeps_raw_audit(image_answer_api, payload, title, options):
-    client, provider, path = image_answer_api
+    client, llm_client, path = image_answer_api
     raw = json.dumps(
         {"title": "看图作答", "options": "蓝色\n红色", "images": [BLUE_PNG], **payload},
         ensure_ascii=False,
@@ -89,20 +92,21 @@ def test_selects_effective_question_and_keeps_raw_audit(image_answer_api, payloa
     )
     assert response.status_code == 200
     assert response.json()["question"] == title
-    request = provider.received[0]
-    assert request.title == title
-    assert request.options == options
-    assert request.question_type is None
-    assert [image.data_url for image in request.images] == (
-        [] if payload.get("images") == [] else [BLUE_PNG]
-    )
+    sent = llm_client.received[0]
+    first_part = sent.parts[0]
+    assert isinstance(first_part, TextPart)
+    assert f"题干：{title}" in first_part.text
+    assert "题型：未知" in first_part.text
+    assert f"<options>\n{'\n'.join(options)}\n</options>" in first_part.text
+    sent_images = [part.data_url for part in sent.parts if isinstance(part, ImagePart)]
+    assert sent_images == ([] if payload.get("images") == [] else [BLUE_PNG])
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT question_raw_json FROM questions").fetchone() == (raw,)
         assert connection.execute("SELECT question_raw_json FROM llm_requests").fetchone() == (raw,)
 
 
 def test_images_are_canonicalized_and_cached_by_ordered_content(image_answer_api):
-    client, provider, _ = image_answer_api
+    client, llm_client, _ = image_answer_api
 
     def answer(data_urls):
         response = client.post(
@@ -117,11 +121,12 @@ def test_images_are_canonicalized_and_cached_by_ordered_content(image_answer_api
         return response.json()["cache_hit"]
 
     assert not answer([BLUE_WEBP.replace("image/webp", "image/png"), RED_PNG])
-    assert provider.received[0].images[0].data_url == BLUE_WEBP
+    sent_images = [part for part in llm_client.received[0].parts if isinstance(part, ImagePart)]
+    assert sent_images[0].data_url == BLUE_WEBP
     assert answer([BLUE_WEBP, RED_PNG])
     assert not answer([RED_PNG, BLUE_WEBP])
     assert not answer([BLUE_PNG, RED_PNG])
-    assert len(provider.received) == 3
+    assert len(llm_client.received) == 3
 
 
 @pytest.mark.parametrize(
@@ -138,16 +143,16 @@ def test_images_are_canonicalized_and_cached_by_ordered_content(image_answer_api
     ],
 )
 def test_invalid_image_request_stops_before_model(image_answer_api, payload):
-    client, provider, _ = image_answer_api
+    client, llm_client, _ = image_answer_api
     request = {"title": "看图", "images": [BLUE_PNG], **payload}
     response = client.post("/api/v1/answer", json=request)
     assert response.status_code == 422
     assert BLUE_PNG not in response.text
-    assert not provider.received
+    assert not llm_client.received
 
 
 def test_image_and_http_request_size_limits(image_answer_api, monkeypatch):
-    client, provider, _ = image_answer_api
+    client, llm_client, _ = image_answer_api
     payload = {"title": "看图", "images": [BLUE_PNG, RED_PNG]}
     monkeypatch.setattr(images, "MAX_TOTAL_IMAGE_BYTES", 100)
     response = client.post("/api/v1/answer", json=payload)
@@ -160,4 +165,4 @@ def test_image_and_http_request_size_limits(image_answer_api, monkeypatch):
     monkeypatch.setattr(dependencies, "MAX_ANSWER_BODY_BYTES", 10)
     response = client.post("/api/v1/answer", content=iter([b'{"title":', b'"figure"}']))
     assert response.status_code == 413
-    assert not provider.received
+    assert not llm_client.received

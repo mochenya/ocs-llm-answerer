@@ -1,22 +1,46 @@
-"""Provider 的通用配置快照和调用结果，不依赖具体 SDK。"""
+"""业务无关的模型输入原语、调用结果和配置快照，不依赖具体 SDK 或答题模型。"""
 
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 
-class LLMAnswer(BaseModel):
-    """模型的结构化答案，题型语义由答题层校验。
+@dataclass(frozen=True)
+class TextPart:
+    """单段文本输入。"""
 
-    Attributes:
-        answers: 原始答案项，空项不得在业务校验之前被丢弃。
-        explanation: 模型给出的依据。
-        confidence: 模型自报置信度。
-    """
+    text: str
 
-    answers: list[str]
-    explanation: str = ""
-    confidence: float = Field(ge=0, le=1)
+
+@dataclass(frozen=True)
+class ImagePart:
+    """与具体厂商传输格式无关的 Base64 图片输入。"""
+
+    media_type: str
+    base64_data: str = field(repr=False)
+
+    @property
+    def data_url(self) -> str:
+        """按需构造标准 Data URL，供 OpenAI 等需要 Data URL 的协议使用。"""
+        return f"data:{self.media_type};base64,{self.base64_data}"
+
+
+type ContentPart = TextPart | ImagePart
+
+
+@dataclass(frozen=True)
+class UserInput:
+    """一次发送给模型会话的用户输入，由有序文本和图片内容块组成。"""
+
+    parts: tuple[ContentPart, ...]
+
+    @classmethod
+    def from_text(cls, text: str) -> UserInput:
+        """构造纯文本用户输入。"""
+        return cls(parts=(TextPart(text=text),))
 
 
 class LLMUsage(BaseModel):
@@ -28,17 +52,17 @@ class LLMUsage(BaseModel):
     cached_tokens: int | None = Field(default=None, ge=0)
 
 
-class LLMCallResult(BaseModel):
-    """模型调用结果及其审计信息。
+class LLMCallResult[TOutput: BaseModel](BaseModel):
+    """泛型模型调用结果及其审计信息。
 
     Attributes:
-        answer: 尚未进行题型校验的结构化答案。
+        parsed: 已通过目标 Pydantic Schema 解析的结构化输出。
         response_body_raw: 原始响应文本，允许非 JSON 内容。
         http_status: 上游 HTTP 状态码。
         usage: 上游报告的 token 用量。
     """
 
-    answer: LLMAnswer
+    parsed: TOutput
     response_body_raw: str | None = None
     http_status: int | None = Field(default=None, ge=100, le=599)
     usage: LLMUsage = Field(default_factory=LLMUsage)

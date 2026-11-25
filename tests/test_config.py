@@ -8,10 +8,11 @@ from ocs_llm_answerer.core.config import (
     ProviderAdapter,
     ProviderConfig,
     ProvidersConfig,
+    Settings,
     get_settings,
     load_providers_config,
 )
-from ocs_llm_answerer.llm import factory as provider_module
+from ocs_llm_answerer.llm import factory as factory_module
 
 
 def test_load_providers_config(tmp_path):
@@ -47,6 +48,7 @@ def test_get_settings_loads_dotenv_into_process_environment(tmp_path, monkeypatc
                 "OCS_LLM_ANSWERER_DATABASE_PATH=runtime/cache.sqlite3",
                 "OCS_LLM_ANSWERER_PROVIDERS_CONFIG_PATH=runtime/providers.json",
                 "OCS_LLM_ANSWERER_OCS_ANSWERER_REQUEST_TYPE=GM_xmlhttpRequest",
+                "OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS=4",
                 "OPENAI_API_KEY=local-provider-key",
             ]
         ),
@@ -57,6 +59,7 @@ def test_get_settings_loads_dotenv_into_process_environment(tmp_path, monkeypatc
     monkeypatch.delenv("OCS_LLM_ANSWERER_DATABASE_PATH", raising=False)
     monkeypatch.delenv("OCS_LLM_ANSWERER_PROVIDERS_CONFIG_PATH", raising=False)
     monkeypatch.delenv("OCS_LLM_ANSWERER_OCS_ANSWERER_REQUEST_TYPE", raising=False)
+    monkeypatch.delenv("OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     get_settings.cache_clear()
 
@@ -67,9 +70,19 @@ def test_get_settings_loads_dotenv_into_process_environment(tmp_path, monkeypatc
         assert settings.app_database_path.as_posix() == "runtime/cache.sqlite3"
         assert settings.app_providers_config_path.as_posix() == "runtime/providers.json"
         assert settings.app_ocs_answerer_request_type == "GM_xmlhttpRequest"
+        assert settings.app_max_answer_attempts == 4
         assert os.getenv("OPENAI_API_KEY") == "local-provider-key"
     finally:
         get_settings.cache_clear()
+
+
+def test_settings_default_and_validation_for_max_answer_attempts(monkeypatch):
+    monkeypatch.delenv("OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.app_max_answer_attempts == 3
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, app_max_answer_attempts=0)
 
 
 def test_get_settings_accepts_legacy_question_env_names(tmp_path, monkeypatch):
@@ -106,23 +119,23 @@ def test_get_settings_accepts_legacy_question_env_names(tmp_path, monkeypatch):
         get_settings.cache_clear()
 
 
-def test_create_provider_loads_custom_api_key_env_from_dotenv(tmp_path, monkeypatch):
+def test_create_llm_client_loads_custom_api_key_env_from_dotenv(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text("CUSTOM_LLM_API_KEY=custom-provider-key", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CUSTOM_LLM_API_KEY", raising=False)
     get_settings.cache_clear()
 
-    class FakeProvider:
+    class FakeClient:
         def __init__(self, name: str, config: ProviderConfig, api_key: str) -> None:
             self.name = name
             self.model = config.model
             self.api_key = api_key
-            self.request_metadata = config.to_metadata()
+            self.request_metadata = factory_module.provider_metadata_from_config(config)
 
     monkeypatch.setitem(
-        provider_module._PROVIDER_FACTORIES,
+        factory_module._CLIENT_FACTORIES,
         ProviderAdapter.OPENAI_RESPONSES,
-        FakeProvider,
+        FakeClient,
     )
     config = ProvidersConfig(
         active_provider="custom",
@@ -137,14 +150,14 @@ def test_create_provider_loads_custom_api_key_env_from_dotenv(tmp_path, monkeypa
     )
 
     try:
-        provider = provider_module.create_provider(config)
+        client = factory_module.create_llm_client(config)
 
-        assert provider.api_key == "custom-provider-key"
+        assert client.api_key == "custom-provider-key"
     finally:
         get_settings.cache_clear()
 
 
-def test_create_provider_rejects_missing_api_key_env(monkeypatch):
+def test_create_llm_client_rejects_missing_api_key_env(monkeypatch):
     monkeypatch.delenv("MISSING_PROVIDER_API_KEY", raising=False)
     config = ProvidersConfig(
         active_provider="custom",
@@ -159,7 +172,7 @@ def test_create_provider_rejects_missing_api_key_env(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="Missing API key environment variable"):
-        provider_module.create_provider(config)
+        factory_module.create_llm_client(config)
 
 
 def test_load_providers_config_rejects_missing_active_provider(tmp_path):

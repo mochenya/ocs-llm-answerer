@@ -5,53 +5,41 @@ from pathlib import Path
 import pytest
 
 from ocs_llm_answerer.answer.errors import RepositoryError
-from ocs_llm_answerer.answer.models import CachedAnswer, NormalizedQuestion
+from ocs_llm_answerer.answer.models import CachedAnswer, LLMCallAudit, NormalizedQuestion
 from ocs_llm_answerer.database.cache import AnswerCacheRepository
-from ocs_llm_answerer.database.connection import init_sqlite
-from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
-from ocs_llm_answerer.llm.models import (
-    LLMAnswer,
-    LLMCallResult,
-    LLMProviderMetadata,
+from ocs_llm_answerer.database.connection import (
+    SQLITE_BUSY_TIMEOUT_MS,
+    connect_database,
+    init_sqlite,
 )
+from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
+from ocs_llm_answerer.llm.models import LLMProviderMetadata
 
 
 async def save_call(database_path: Path, record: CachedAnswer) -> int:
-    """为测试答案创建真实调用流水，不绕过数据库关联约束。
-
-    Args:
-        database_path: 已初始化的临时数据库路径。
-        record: 提供题目和答案内容的测试记录。
-
-    Returns:
-        已提交的调用流水整数主键。
-    """
-    return await LLMRequestRepository(database_path).record_success(
-        NormalizedQuestion(
-            question_hash=record.question_hash,
-            question=record.question,
-            question_type=record.question_type,
-            options=record.options,
-        ),
-        LLMProviderMetadata(
-            adapter="fake",
-            base_url="https://test.invalid/v1",
-            api_key_env="FAKE_API_KEY",
-            model=record.model,
-            timeout_seconds=1,
-            max_retries=0,
-        ),
-        LLMCallResult(
-            answer=LLMAnswer(
-                answers=[record.answer],
-                explanation=record.explanation,
-                confidence=record.confidence,
-            )
-        ),
-        seen_at_ns=1,
-        request_started_at_ns=2,
-        request_completed_at_ns=3,
-        latency_ms=1,
+    """为测试答案创建真实调用流水，不绕过数据库关联约束。"""
+    return await LLMRequestRepository(database_path).record(
+        LLMCallAudit(
+            question=NormalizedQuestion(
+                question_hash=record.question_hash,
+                question=record.question,
+                question_type=record.question_type,
+                options=record.options,
+            ),
+            metadata=LLMProviderMetadata(
+                adapter="fake",
+                base_url="https://test.invalid/v1",
+                api_key_env="FAKE_API_KEY",
+                model=record.model,
+                timeout_seconds=1,
+                max_retries=0,
+            ),
+            status="SUCCESS",
+            seen_at_ns=1,
+            request_started_at_ns=2,
+            request_completed_at_ns=3,
+            latency_ms=1,
+        )
     )
 
 
@@ -73,7 +61,6 @@ def persisted_answer(tmp_path):
     )
 
     async def prepare():
-        """初始化数据库并将实际调用主键写回测试记录。"""
         await init_sqlite(database_path)
         record.llm_request_id = await save_call(database_path, record)
 
@@ -81,12 +68,26 @@ def persisted_answer(tmp_path):
     return database_path, record
 
 
+def test_init_sqlite_enables_wal_and_connection_pragmas(tmp_path: Path) -> None:
+    """数据库初始化开启 WAL 日志模式，且每次连接启用外键与写锁等待超时。"""
+    database_path = tmp_path / "wal.sqlite3"
+
+    async def inspect_pragmas() -> tuple[str, int, int]:
+        await init_sqlite(database_path)
+        async with connect_database(database_path) as db:
+            journal_mode = (await (await db.execute("PRAGMA journal_mode")).fetchone())[0]
+            busy_timeout = (await (await db.execute("PRAGMA busy_timeout")).fetchone())[0]
+            foreign_keys = (await (await db.execute("PRAGMA foreign_keys")).fetchone())[0]
+        return str(journal_mode).lower(), int(busy_timeout), int(foreign_keys)
+
+    assert asyncio.run(inspect_pragmas()) == ("wal", SQLITE_BUSY_TIMEOUT_MS, 1)
+
+
 def test_answer_cache_uses_normalized_schema(persisted_answer):
     """缓存答案保留调用主键和原有命中统计行为。"""
     database_path, record = persisted_answer
 
     async def exercise_cache():
-        """依次验证未命中、写入和两次命中。"""
         cache = AnswerCacheRepository(database_path)
         first_hit = await cache.get(record.question_hash)
         await cache.set(record)
@@ -135,7 +136,6 @@ def test_missing_call_is_rejected_and_question_changes_roll_back(persisted_answe
     )
 
     async def exercise():
-        """在实际缓存写入入口触发外键约束。"""
         cache = AnswerCacheRepository(database_path)
         if existing_cache:
             await cache.set(record)
@@ -157,7 +157,6 @@ def test_cache_can_reference_a_new_call_without_removing_history(persisted_answe
     database_path, record = persisted_answer
 
     async def exercise():
-        """写入两次调用并更新当前缓存来源。"""
         cache = AnswerCacheRepository(database_path)
         await cache.set(record)
         second_id = await save_call(database_path, record)

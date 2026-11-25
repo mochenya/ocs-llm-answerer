@@ -1,9 +1,14 @@
 """答题用例的数据模型，不包含 HTTP 字段别名或数据库 JSON 编码。"""
 
-from dataclasses import dataclass
-from enum import StrEnum
+from __future__ import annotations
 
-from pydantic import BaseModel, Field, field_validator
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from ocs_llm_answerer.llm.models import LLMProviderMetadata, LLMUsage
 
 
 class OCSQuestionType(StrEnum):
@@ -17,14 +22,20 @@ class OCSQuestionType(StrEnum):
 
 @dataclass(frozen=True)
 class QuestionImage:
-    """已校验的图片 Data URL 和解码后内容的 SHA-256。"""
+    """已校验的题目图片媒体类型、纯 Base64 数据与解码字节 SHA-256。"""
 
-    data_url: str
+    media_type: str
+    base64_data: str = field(repr=False)
     sha256: str
+
+    @property
+    def data_url(self) -> str:
+        """按需构造标准 Data URL。"""
+        return f"data:{self.media_type};base64,{self.base64_data}"
 
 
 class Question(BaseModel):
-    """供服务和 Provider 使用的题目，不携带原始 HTTP 载荷。
+    """供答题服务使用的内部题目，不携带原始 HTTP 载荷。
 
     Attributes:
         title: 题干，内部有意义的空白需要保留。
@@ -55,6 +66,39 @@ class Question(BaseModel):
         if not value.strip():
             raise ValueError("title must contain non-whitespace text")
         return value
+
+
+class AnswerPayload(BaseModel):
+    """模型针对单道 OCS 题目返回的结构化答案载荷（业务唯一事实来源）。
+
+    Attributes:
+        answers: 原始答案项，空项不得在业务校验之前被丢弃。
+        explanation: 模型给出的简短中文依据。
+        confidence: 模型自报置信度，范围 0 到 1。
+    """
+
+    model_config = ConfigDict(
+        extra="forbid",
+        title="OCSQuestionAnswer",
+        json_schema_extra={
+            "description": "Structured answer payload returned by the LLM for one OCS question."
+        },
+    )
+
+    answers: list[str] = Field(
+        description=(
+            "Final answer items. Use one item for single/judgement; multiple items "
+            "for multiple-choice or multi-blank completion."
+        ),
+    )
+    explanation: str = Field(
+        description="Brief Chinese explanation for the answer.",
+    )
+    confidence: float = Field(
+        ge=0,
+        le=1,
+        description="Confidence score from 0 to 1.",
+    )
 
 
 @dataclass(frozen=True)
@@ -115,3 +159,22 @@ class CachedAnswer(BaseModel):
     confidence: float
     provider: str
     model: str
+
+
+@dataclass(frozen=True)
+class LLMCallAudit:
+    """单次上游模型调用的不可变审计记录，用于收口仓储写入参数。"""
+
+    question: NormalizedQuestion
+    metadata: LLMProviderMetadata
+    status: Literal["SUCCESS", "FAILURE"]
+    seen_at_ns: int
+    request_started_at_ns: int
+    request_completed_at_ns: int
+    latency_ms: int
+    response_body_raw: str | None = None
+    http_status: int | None = None
+    usage: LLMUsage = field(default_factory=LLMUsage)
+    error_type: str | None = None
+    error_message: str | None = None
+    audit: RequestAudit | None = None

@@ -18,6 +18,7 @@ cp config/providers.example.json config/providers.json
 | `OCS_LLM_ANSWERER_PROVIDERS_CONFIG_PATH` | `config/providers.json` | provider 运行配置文件路径。 |
 | `OCS_LLM_ANSWERER_OCS_ANSWERER_REQUEST_TYPE` | `fetch` | `/ocs-answerer.json` 输出的 OCS 请求模式，支持 `fetch` 和 `GM_xmlhttpRequest`。 |
 | `OCS_LLM_ANSWERER_IMAGE_ENABLED` | `false` | 设为 `true` 后启用 Base64 图片答题和订阅中的图片字段。 |
+| `OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS` | `3` | 单道题最大模型尝试次数（含初次 1 次与结构解析/题型校验失败后的纠正重试），最小为 `1`。 |
 
 示例：
 
@@ -27,6 +28,7 @@ OCS_LLM_ANSWERER_DATABASE_PATH=data/cache.sqlite3
 OCS_LLM_ANSWERER_PROVIDERS_CONFIG_PATH=config/providers.json
 OCS_LLM_ANSWERER_OCS_ANSWERER_REQUEST_TYPE=fetch
 OCS_LLM_ANSWERER_IMAGE_ENABLED=false
+OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS=3
 OPENAI_API_KEY=sk-...
 ```
 
@@ -60,7 +62,7 @@ data/cache.sqlite3
 
 `llm_requests.response_body_raw` 保存原始响应文本，允许 HTML、纯文本、截断 JSON 和空字符串。HTTP 错误及解析失败也会保留正文和上游状态码；应用自己生成的 JSON 字段仍保留合法性约束。
 
-`data/*.sqlite`、`data/*.sqlite3` 和 `data/*.db` 已被忽略，避免把本地题库缓存提交到仓库。
+`data/*.sqlite`、`data/*.sqlite3`、`data/*.db` 以及 SQLite WAL 伴生文件（`data/*-wal`、`data/*-shm`）已被忽略，避免把本地题库缓存提交到仓库。初始化时默认开启 `WAL` 日志模式并为连接配置 `busy_timeout = 5000ms` 以降低并发锁冲突。
 
 ## Provider 配置
 
@@ -101,9 +103,9 @@ cp config/providers.example.json config/providers.json
 | `model` | 请求的模型名称。 |
 | `timeout_seconds` | SDK 请求超时时间，必须大于 0。 |
 | `max_retries` | SDK 最大重试次数，必须大于等于 0。 |
-| `extra_body` | 原样附加到 OpenAI Responses API 请求体，适合兼容网关的厂商参数。 |
+| `extra_body` | 原样附加到上游 API 请求体，适合控制思考开关、思考强度、输出上限等厂商参数。 |
 
-当前 `openai_responses` adapter 要求后端兼容 OpenAI Responses API，不是 Chat Completions API。它返回结构化答案项及响应元数据，答题层统一校验题型规则，再转换为 OCS 需要的答案字符串；非法答案会记录为失败且不进入缓存。
+当前 `openai_responses` adapter 要求后端兼容 OpenAI Responses API，不是 Chat Completions API。适配器不在代码中硬编码 `temperature` 或 `max_output_tokens`，需要控制采样、思考强度或输出上限时通过 `extra_body` 传入。若上游返回非结构化文本（如包裹在 ```` ```json ```` 代码块中），解析器会自动剥离代码块并校验；解析失败或违反题型规则时，服务会在同一会话中保留原响应项（含 `reasoning` 思考块）并追加错误反馈重试，直至达到 `OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS`。
 
 ## OCS 请求模式
 

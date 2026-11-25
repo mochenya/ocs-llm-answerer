@@ -1,4 +1,4 @@
-"""统一 SQLite 连接配置和错误转换，不隐式改变仓储的提交边界。"""
+"""统一 SQLite 连接配置、WAL 并发模式和错误转换，不隐式改变仓储的提交边界。"""
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -9,10 +9,12 @@ import aiosqlite
 
 from ocs_llm_answerer.answer.errors import RepositoryError
 
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
 
 @asynccontextmanager
 async def connect_database(database_path: Path) -> AsyncIterator[aiosqlite.Connection]:
-    """打开启用外键的短连接，将数据库故障转换成仓储错误。
+    """打开启用外键与写锁等待超时的短连接，将数据库故障转换成仓储错误。
 
     Args:
         database_path: SQLite 数据库文件路径。
@@ -25,6 +27,7 @@ async def connect_database(database_path: Path) -> AsyncIterator[aiosqlite.Conne
     """
     try:
         async with aiosqlite.connect(database_path) as db:
+            await db.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
             await db.execute("PRAGMA foreign_keys = ON")
             db.row_factory = aiosqlite.Row
             yield db
@@ -33,7 +36,7 @@ async def connect_database(database_path: Path) -> AsyncIterator[aiosqlite.Conne
 
 
 async def init_sqlite(database_path: Path, schema_path: Path | None = None) -> None:
-    """创建当前结构，不迁移或改写旧数据库。
+    """启用 WAL 日志模式并创建当前结构，不迁移或改写旧数据库。
 
     Args:
         database_path: 数据库路径，父目录不存在时会创建。
@@ -50,5 +53,6 @@ async def init_sqlite(database_path: Path, schema_path: Path | None = None) -> N
         else files(__package__).joinpath("schema.sql").read_text(encoding="utf-8")
     )
     async with connect_database(database_path) as db:
+        await db.execute("PRAGMA journal_mode = WAL")
         await db.executescript(schema_sql)
         await db.commit()

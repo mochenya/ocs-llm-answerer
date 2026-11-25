@@ -20,8 +20,6 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from ocs_llm_answerer.llm.models import LLMProviderMetadata
-
 _API_KEY_ENV = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _ENV_FILE = Path(".env")
 
@@ -56,6 +54,11 @@ class Settings(BaseSettings):
     )
     app_image_enabled: bool = Field(
         default=False, validation_alias="OCS_LLM_ANSWERER_IMAGE_ENABLED"
+    )
+    app_max_answer_attempts: int = Field(
+        default=3,
+        ge=1,
+        validation_alias="OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS",
     )
 
     # Settings only models application config. Provider API keys may also live in .env;
@@ -102,22 +105,6 @@ class ProviderConfig(BaseModel):
         if _API_KEY_ENV.fullmatch(value) is None:
             raise ValueError("api_key_env must be a valid environment variable name")
         return value
-
-    def to_metadata(self) -> LLMProviderMetadata:
-        """提取与 SDK 无关的审计配置，不读取密钥值。
-
-        Returns:
-            当前模型和连接配置的快照。
-        """
-        return LLMProviderMetadata(
-            adapter=self.adapter,
-            base_url=self.base_url,
-            api_key_env=self.api_key_env,
-            model=self.model,
-            timeout_seconds=self.timeout_seconds,
-            max_retries=self.max_retries,
-            extra_body=self.extra_body,
-        )
 
 
 class ProvidersConfig(BaseModel):

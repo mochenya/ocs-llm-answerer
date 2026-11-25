@@ -14,16 +14,19 @@ from ocs_llm_answerer.core.config import Settings, get_settings, load_providers_
 from ocs_llm_answerer.database.cache import AnswerCacheRepository
 from ocs_llm_answerer.database.connection import init_sqlite
 from ocs_llm_answerer.database.llm_requests import LLMRequestRepository
-from ocs_llm_answerer.llm.factory import create_provider
-from ocs_llm_answerer.llm.provider import LLMProvider
+from ocs_llm_answerer.llm.client import LLMClient
+from ocs_llm_answerer.llm.factory import create_llm_client
 
 
-def create_app(settings: Settings | None = None, provider: LLMProvider | None = None) -> FastAPI:
-    """创建应用，只管理应用内部创建的 Provider 的生命周期。
+def create_app(
+    settings: Settings | None = None,
+    llm_client: LLMClient | None = None,
+) -> FastAPI:
+    """创建应用，只管理应用内部创建的 LLMClient 的生命周期。
 
     Args:
         settings: 应用设置；缺省时读取环境配置。
-        provider: 可选外部实例，关闭责任始终由注入方承担。
+        llm_client: 可选外部实例，关闭责任始终由注入方承担。
 
     Returns:
         尚未启动生命周期的 FastAPI 应用。
@@ -42,25 +45,26 @@ def create_app(settings: Settings | None = None, provider: LLMProvider | None = 
         """
         # 启动时统一构建运行时依赖，让路由处理函数保持简单。
         await init_sqlite(app_settings.app_database_path)
-        llm_provider = (
-            provider
-            if provider is not None
-            else create_provider(load_providers_config(app_settings.app_providers_config_path))
+        client = (
+            llm_client
+            if llm_client is not None
+            else create_llm_client(load_providers_config(app_settings.app_providers_config_path))
         )
         try:
             cache_repository = AnswerCacheRepository(app_settings.app_database_path)
             request_repository = LLMRequestRepository(app_settings.app_database_path)
             app.state.answer_service = AnswerService(
                 cache_repository=cache_repository,
-                provider=llm_provider,
+                llm_client=client,
                 request_repository=request_repository,
+                max_attempts=app_settings.app_max_answer_attempts,
             )
             app.state.app_api_key = app_settings.app_api_key
             app.state.app_ocs_answerer_request_type = app_settings.app_ocs_answerer_request_type
             yield
         finally:
-            if provider is None:
-                await llm_provider.aclose()
+            if llm_client is None:
+                await client.aclose()
 
     app = FastAPI(title="OCS LLM Answerer Backend", lifespan=lifespan)
     app.state.app_image_enabled = app_settings.app_image_enabled

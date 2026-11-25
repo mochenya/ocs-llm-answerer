@@ -26,14 +26,15 @@ class AnswerCacheRepository:
     async def get(
         self,
         question_hash: str,
-        question_raw_json: str | None = None,
+        *,
+        audit: RequestAudit | None = None,
         seen_at_ns: int | None = None,
     ) -> CachedAnswer | None:
         """读取当前答案及其来源调用，并更新命中统计。
 
         Args:
             question_hash: 标准化题目的稳定标识。
-            question_raw_json: 本次请求原文，提供时更新题目的最近载荷。
+            audit: 本次原始请求快照，提供时更新题目的最近载荷。
             seen_at_ns: 本次请求时间；缺省时使用当前 Unix 纳秒时间。
 
         Returns:
@@ -44,6 +45,7 @@ class AnswerCacheRepository:
         """
         if seen_at_ns is None:
             seen_at_ns = time.time_ns()
+        question_raw_json = audit.raw_payload_json if audit is not None else None
         async with connect_database(self._database_path) as db:
             cursor = await db.execute(
                 """
@@ -101,8 +103,8 @@ class AnswerCacheRepository:
     async def set(
         self,
         record: CachedAnswer,
-        seen_at_ns: int | None = None,
         *,
+        seen_at_ns: int | None = None,
         audit: RequestAudit | None = None,
     ) -> None:
         """在同一短事务中写入题目与当前答案，并验证调用外键。
