@@ -38,6 +38,18 @@ def test_load_providers_config(tmp_path):
 
     assert config.active_provider == "openai"
     assert config.active.model == "gpt-4o-mini"
+    assert config.active.timeout_seconds == 300
+
+
+def test_provider_config_validates_timeout_seconds():
+    with pytest.raises(ValidationError, match="timeout_seconds"):
+        ProviderConfig(
+            adapter="openai_responses",
+            base_url="https://api.openai.com/v1",
+            api_key_env="OPENAI_API_KEY",
+            model="gpt-4o-mini",
+            timeout_seconds=0,
+        )
 
 
 def test_get_settings_loads_dotenv_into_process_environment(tmp_path, monkeypatch):

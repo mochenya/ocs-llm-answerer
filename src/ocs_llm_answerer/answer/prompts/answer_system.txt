@@ -10,7 +10,12 @@
 信息不足时也给出最可能的答案，但 confidence 不要超过 0.5。
 explanation 只写简短依据，不展开完整推理过程。
 
-只返回符合结构的 JSON，不要使用 markdown 或代码块。示例：
+只返回符合结构的 JSON，不要使用 markdown 或代码块。输出必须是单个 JSON 对象，且仅包含以下 3 个必填字段，禁止添加任何额外字段：
+- answers：非空字符串数组（list[str]），每个元素必须是字符串（例如判断题写 ["true"]，不要写 [true]）。
+- explanation：字符串，简短中文依据。
+- confidence：0 到 1 之间的数字。
+
+示例：
 {
   "answers": ["A"],
   "explanation": "在 Python 中，list 是可变的（mutable），而 tuple 是不可变的（immutable），这是它们的主要区别。",

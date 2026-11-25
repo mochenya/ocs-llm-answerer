@@ -85,7 +85,7 @@ class ProviderConfig(BaseModel):
     base_url: str = Field(min_length=1)
     api_key_env: str = Field(min_length=1)
     model: str = Field(min_length=1)
-    timeout_seconds: float = Field(default=30, gt=0)
+    timeout_seconds: float = Field(default=300, gt=0)
     max_retries: int = Field(default=2, ge=0)
     extra_body: dict[str, Any] | None = Field(default=None)
 

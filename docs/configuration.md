@@ -83,7 +83,7 @@ cp config/providers.example.json config/providers.json
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
       "model": "gpt-4o-mini",
-      "timeout_seconds": 30,
+      "timeout_seconds": 300,
       "max_retries": 2,
       "extra_body": {}
     }
@@ -101,11 +101,11 @@ cp config/providers.example.json config/providers.json
 | `base_url` | OpenAI API 或兼容网关的 HTTP(S) base URL。 |
 | `api_key_env` | API Key 所在环境变量名。密钥值不写进 JSON。 |
 | `model` | 请求的模型名称。 |
-| `timeout_seconds` | SDK 请求超时时间，必须大于 0。 |
+| `timeout_seconds` | SDK 请求超时时间（秒），默认 `300`，必须大于 0。 |
 | `max_retries` | SDK 最大重试次数，必须大于等于 0。 |
 | `extra_body` | 原样附加到上游 API 请求体，适合控制思考开关、思考强度、输出上限等厂商参数。 |
 
-当前 `openai_responses` adapter 要求后端兼容 OpenAI Responses API，不是 Chat Completions API。适配器不在代码中硬编码 `temperature` 或 `max_output_tokens`，需要控制采样、思考强度或输出上限时通过 `extra_body` 传入。若上游返回非结构化文本（如包裹在 ```` ```json ```` 代码块中），解析器会自动剥离代码块并校验；解析失败或违反题型规则时，服务会在同一会话中保留原响应项（含 `reasoning` 思考块）并追加错误反馈重试，直至达到 `OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS`。
+当前 `openai_responses` adapter 要求后端兼容 OpenAI Responses API，不是 Chat Completions API。适配器固定请求默认的纯文本输出（`text.format.type = "text"`），而不发送 `json_schema` 约束，以避免与上游内置服务端工具（如 DeepSeek `deepseek_web_search`）冲突或触发兼容网关差异，也无需在 `extra_body` 中手动覆写 `text`。适配器不在代码中硬编码 `temperature` 或 `max_output_tokens`，需要控制采样、思考强度、内置工具或输出上限时通过 `extra_body` 传入。模型输出由提示词约束为 JSON，并在本地执行容错解析（自动剥离 ```` ```json ```` 代码块与包裹文本）和 Pydantic 校验；解析失败或违反题型规则时，服务会在同一会话中保留原响应项（含 `reasoning` 思考块与 `web_search_call` 等原生项）并追加错误反馈重试，直至达到 `OCS_LLM_ANSWERER_MAX_ANSWER_ATTEMPTS`。
 
 ## OCS 请求模式
 

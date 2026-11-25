@@ -8,7 +8,9 @@ import warnings
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from openai import AsyncOpenAI
 
 from ocs_llm_answerer.answer.models import AnswerPayload, OCSQuestionType, Question, QuestionImage
 from ocs_llm_answerer.answer.prompting import (
@@ -47,6 +49,7 @@ def test_system_prompt_describes_ocs_answer_format() -> None:
     assert '"answers": ["A"]' in SYSTEM_PROMPT
     assert "后端会把答案列表转换" not in SYSTEM_PROMPT
     assert "不要使用 markdown 或代码块" in SYSTEM_PROMPT
+    assert "禁止添加任何额外字段" in SYSTEM_PROMPT
 
 
 def test_build_question_text_uses_delimited_sections() -> None:
@@ -93,23 +96,18 @@ def test_answer_payload_schema_guides_model_output() -> None:
 
 
 @pytest.mark.parametrize("with_images", [False, True])
-def test_openai_responses_session_uses_pydantic_text_format_without_hardcoded_sampling(
+def test_openai_responses_session_uses_default_text_format_without_hardcoded_sampling(
     with_images: bool,
 ) -> None:
-    """使用目标 Pydantic 模型作为 text_format，不硬编码 temperature 或 max_output_tokens。"""
-    extra_body = {"reasoning": {"effort": "low"}}
+    """使用默认 text 输出格式与本地 JSON 加载，不传 json_schema，不硬编码采样参数。"""
+    extra_body = {"tools": [{"type": "deepseek_web_search"}]}
     client = OpenAIResponsesClient("fake", _make_config(extra_body=extra_body), "fake-key")
-    fake_sdk = _ScriptedOpenAIClient(
-        [
-            _FakeRawResponse(
-                parsed=AnswerPayload(
-                    answers=["A", "C"],
-                    explanation="list 和 dict 是可变类型。",
-                    confidence=0.95,
-                )
-            )
-        ]
+    payload = AnswerPayload(
+        answers=["A", "C"],
+        explanation="list 和 dict 是可变类型。",
+        confidence=0.95,
     )
+    fake_sdk = _ScriptedOpenAIClient([_FakeRawResponse(output_text=payload.model_dump_json())])
     client._client = fake_sdk
 
     images = (
@@ -130,12 +128,12 @@ def test_openai_responses_session_uses_pydantic_text_format_without_hardcoded_sa
     result = asyncio.run(session.send_structured(build_question_input(question), AnswerPayload))
 
     kwargs = fake_sdk.responses.with_raw_response.calls[0]
-    assert kwargs["text_format"] is AnswerPayload
+    assert kwargs["text"] == {"format": {"type": "text"}}
+    assert "text_format" not in kwargs
     assert kwargs["store"] is False
     assert kwargs["extra_body"] == extra_body
     assert "temperature" not in kwargs
     assert "max_output_tokens" not in kwargs
-    assert "text" not in kwargs
     if with_images:
         assert kwargs["input"] == [
             {
@@ -157,8 +155,8 @@ def test_openai_responses_session_uses_pydantic_text_format_without_hardcoded_sa
     assert result.usage.total_tokens == 30
 
 
-def test_openai_responses_session_parses_fenced_json_fallback() -> None:
-    """上游未返回 output_parsed 且文本包裹在 ```json 代码块中时也能正确解析。"""
+def test_openai_responses_session_parses_fenced_json_output() -> None:
+    """上游返回包裹在 ```json 代码块中的文本时，通过本地解析器正确加载并校验。"""
     client = OpenAIResponsesClient("fake", _make_config(), "fake-key")
     client._client = _ScriptedOpenAIClient(
         [
@@ -200,7 +198,7 @@ def test_openai_responses_session_preserves_reasoning_and_phase_across_retries()
     fake_sdk = _ScriptedOpenAIClient(
         [
             _FakeRawResponse(output_text="not-json", raw_text=first_raw),
-            _FakeRawResponse(parsed=second_payload),
+            _FakeRawResponse(output_text=second_payload.model_dump_json()),
         ]
     )
     client._client = fake_sdk
@@ -211,7 +209,7 @@ def test_openai_responses_session_preserves_reasoning_and_phase_across_retries()
 
     assert exc_info.value.raw_body == first_raw
     assert exc_info.value.status_code == 200
-    assert exc_info.value.usage.total_tokens == 3
+    assert exc_info.value.usage.total_tokens == 30
     assert "ValidationError" in str(exc_info.value)
 
     second_result = asyncio.run(
@@ -226,12 +224,183 @@ def test_openai_responses_session_preserves_reasoning_and_phase_across_retries()
     ]
 
 
+def test_real_sdk_sends_default_text_with_web_search_and_parses_fenced_json() -> None:
+    """使用真实 SDK 传输验证默认 text 与内置联网搜索共存，并正确解析代码块 JSON 与保留搜索项。"""
+    captured_requests: list[dict[str, object]] = []
+    web_search_item = {
+        "id": "srvtoolu_ds_00_1",
+        "type": "web_search_call",
+        "status": "completed",
+        "kind": "deep_search",
+        "action": {
+            "type": "search",
+            "queries": ["PyPI openai latest version"],
+            "sources": [{"type": "url", "url": "https://pypi.org/project/openai/"}],
+        },
+    }
+    reasoning_item = {
+        "id": "rs_1",
+        "type": "reasoning",
+        "summary": [{"type": "summary_text", "text": "联网核对版本"}],
+        "status": "completed",
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        captured_requests.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_1",
+                "object": "response",
+                "created_at": 1764000000,
+                "status": "completed",
+                "model": "deepseek-flash",
+                "output": [
+                    reasoning_item,
+                    web_search_item,
+                    {
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    "```json\n"
+                                    '{"answers":["3.59.0"],"explanation":"已联网核对。","confidence":0.98}'
+                                    "\n```"
+                                ),
+                            }
+                        ],
+                    },
+                ],
+                "usage": {
+                    "input_tokens": 120,
+                    "input_tokens_details": {"cached_tokens": 30},
+                    "output_tokens": 40,
+                    "total_tokens": 160,
+                },
+            },
+        )
+
+    async def exercise() -> None:
+        config = _make_config(extra_body={"tools": [{"type": "deepseek_web_search"}]})
+        client = OpenAIResponsesClient("kedaya", config, "fake-key")
+        await client.aclose()
+        client._client = AsyncOpenAI(
+            api_key="fake-key",
+            base_url=config.base_url,
+            max_retries=0,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        )
+        try:
+            session = client.create_session(instructions=SYSTEM_PROMPT)
+            result = await session.send_structured(UserInput.from_text("最新版本"), AnswerPayload)
+            assert result.parsed == AnswerPayload(
+                answers=["3.59.0"], explanation="已联网核对。", confidence=0.98
+            )
+            assert result.usage.total_tokens == 160
+            assert result.usage.cached_tokens == 30
+            assert captured_requests[0]["text"] == {"format": {"type": "text"}}
+            assert captured_requests[0]["tools"] == [{"type": "deepseek_web_search"}]
+            assert session._items[1] == reasoning_item
+            assert session._items[2] == web_search_item
+        finally:
+            await client.aclose()
+
+    asyncio.run(exercise())
+
+
+def test_real_sdk_non_json_output_raises_retryable_provider_output_error() -> None:
+    """真实 SDK 收到非 JSON 文本时抛出可重试 ProviderOutputError，而非 ProviderResponseError。"""
+    captured_requests: list[dict[str, object]] = []
+    responses_payloads = [
+        {
+            "id": "resp_bad",
+            "object": "response",
+            "created_at": 1764000000,
+            "status": "completed",
+            "model": "deepseek-flash",
+            "output": [
+                {
+                    "id": "msg_bad",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "这道题选 A"}],
+                }
+            ],
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        },
+        {
+            "id": "resp_ok",
+            "object": "response",
+            "created_at": 1764000001,
+            "status": "completed",
+            "model": "deepseek-flash",
+            "output": [
+                {
+                    "id": "msg_ok",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": (
+                                '{"answers":["A"],"explanation":"已按格式返回","confidence":0.9}'
+                            ),
+                        }
+                    ],
+                }
+            ],
+            "usage": {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
+        },
+    ]
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        index = len(captured_requests)
+        captured_requests.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json=responses_payloads[index])
+
+    async def exercise() -> None:
+        config = _make_config()
+        client = OpenAIResponsesClient("fake", config, "fake-key")
+        await client.aclose()
+        client._client = AsyncOpenAI(
+            api_key="fake-key",
+            base_url=config.base_url,
+            max_retries=0,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        )
+        try:
+            session = client.create_session(instructions=SYSTEM_PROMPT)
+            with pytest.raises(ProviderOutputError) as exc_info:
+                await session.send_structured(UserInput.from_text("题目"), AnswerPayload)
+            assert exc_info.value.raw_output_text == "这道题选 A"
+            assert exc_info.value.usage.total_tokens == 15
+
+            recovered = await session.send_structured(
+                UserInput.from_text("请只返回合法 JSON"), AnswerPayload
+            )
+            assert recovered.parsed.answers == ["A"]
+            assert len(captured_requests[1]["input"]) == 3
+        finally:
+            await client.aclose()
+
+    asyncio.run(exercise())
+
+
 def test_separate_sessions_do_not_share_message_history() -> None:
     """同一个 OpenAIResponsesClient 创建的不同会话彼此完全隔离。"""
     payload = AnswerPayload(answers=["A"], explanation="ok", confidence=0.9)
     client = OpenAIResponsesClient("fake", _make_config(), "fake-key")
     fake_sdk = _ScriptedOpenAIClient(
-        [_FakeRawResponse(parsed=payload), _FakeRawResponse(parsed=payload)]
+        [
+            _FakeRawResponse(output_text=payload.model_dump_json()),
+            _FakeRawResponse(output_text=payload.model_dump_json()),
+        ]
     )
     client._client = fake_sdk
 
@@ -250,13 +419,14 @@ def test_separate_sessions_do_not_share_message_history() -> None:
 
 def test_session_history_is_not_polluted_by_transport_errors() -> None:
     """上游网络超时或连接失败不得向会话历史写入半残消息。"""
-    import httpx
     from openai import APITimeoutError
 
     payload = AnswerPayload(answers=["A"], explanation="ok", confidence=0.9)
     client = OpenAIResponsesClient("fake", _make_config(), "fake-key")
     timeout_error = APITimeoutError(request=httpx.Request("POST", "https://fake.local/v1"))
-    fake_sdk = _ScriptedOpenAIClient([timeout_error, _FakeRawResponse(parsed=payload)])
+    fake_sdk = _ScriptedOpenAIClient(
+        [timeout_error, _FakeRawResponse(output_text=payload.model_dump_json())]
+    )
     client._client = fake_sdk
 
     session = client.create_session(instructions=SYSTEM_PROMPT)
@@ -313,13 +483,13 @@ def test_invalid_usage_keeps_raw_response_in_non_retryable_provider_error() -> N
         client = OpenAIResponsesClient("fake", config, "fake-key")
         await client.aclose()
         response = _FakeParsedResponse(
-            parsed=AnswerPayload(answers=["A"], explanation="", confidence=0.9)
+            output_text='{"answers":["A"],"explanation":"","confidence":0.9}'
         )
         response.usage = {"input_tokens": -1}
         raw = SimpleNamespace(text="exact raw body", status_code=200, parse=lambda: response)
         fake_sdk = SimpleNamespace(
             responses=SimpleNamespace(
-                with_raw_response=SimpleNamespace(parse=AsyncMock(return_value=raw))
+                with_raw_response=SimpleNamespace(create=AsyncMock(return_value=raw))
             )
         )
         with pytest.MonkeyPatch.context() as patch:
@@ -345,7 +515,7 @@ class _ScriptedWithRawResponse:
         self._responses = responses
         self.calls: list[dict[str, object]] = []
 
-    async def parse(self, **kwargs: object) -> _FakeRawResponse:
+    async def create(self, **kwargs: object) -> _FakeRawResponse:
         index = len(self.calls)
         self.calls.append(kwargs)
         outcome = self._responses[index]
@@ -360,40 +530,25 @@ class _FakeRawResponse:
     def __init__(
         self,
         *,
-        parsed: AnswerPayload | None = None,
         output_text: str | None = None,
         raw_text: str = '{"raw":true}',
     ) -> None:
-        self._parsed = parsed
         self._output_text = output_text
         self.text = raw_text
 
     def parse(self) -> _FakeParsedResponse:
-        return _FakeParsedResponse(parsed=self._parsed, output_text=self._output_text)
+        return _FakeParsedResponse(output_text=self._output_text)
 
 
 class _FakeParsedResponse:
-    def __init__(
-        self,
-        *,
-        parsed: AnswerPayload | None = None,
-        output_text: str | None = None,
-    ) -> None:
-        self.output_parsed = parsed
+    def __init__(self, *, output_text: str | None = None) -> None:
         self.output_text = output_text
-        if parsed is not None:
-            self.usage: dict[str, object] = {
-                "input_tokens": 10,
-                "input_tokens_details": {"cached_tokens": 2},
-                "output_tokens": 20,
-                "total_tokens": 30,
-            }
-        else:
-            self.usage = {
-                "input_tokens": 1,
-                "output_tokens": 2,
-                "total_tokens": 3,
-            }
+        self.usage: dict[str, object] = {
+            "input_tokens": 10,
+            "input_tokens_details": {"cached_tokens": 2},
+            "output_tokens": 20,
+            "total_tokens": 30,
+        }
 
 
 class _ResponseWithWarningDump:

@@ -36,7 +36,7 @@
 | --- | --- |
 | OCS 兼容 | 提供答题接口、图片题支持与可导入的题库订阅配置。 |
 | 智能缓存 | 先查 SQLite（WAL 模式）缓存，未命中再请求 LLM，避免同题重复消耗 token。 |
-| 结构化与纠错重试 | 支持 OpenAI Responses API 结构化输出与代码块容错解析；解析或题型校验失败时在同一会话中保留原响应（含思考块）并追加错误反馈重试。 |
+| 容错解析与纠错重试 | OpenAI Responses API 采用默认纯文本输出并由提示词约束 JSON，兼容内置联网搜索等上游工具；本地支持代码块容错解析，解析或题型校验失败时在同一会话中保留原响应（含思考块）并追加错误反馈重试。 |
 | 请求审计 | 按每次上游调用 1:1 记录配置快照、原始响应、状态、耗时和 token 用量。 |
 | 模块解耦 | 严格单向分层架构（`core ← llm ← answer ← api/database`），业务提示词与底层模型协议彻底分离。 |
 | 本地优先 | 默认监听 `127.0.0.1:8000`，密钥通过 `.env` 和环境变量管理。 |
@@ -162,7 +162,7 @@ OPENAI_API_KEY=
       "base_url": "https://api.openai.com/v1",
       "api_key_env": "OPENAI_API_KEY",
       "model": "gpt-4o-mini",
-      "timeout_seconds": 30,
+      "timeout_seconds": 300,
       "max_retries": 2,
       "extra_body": {}
     }

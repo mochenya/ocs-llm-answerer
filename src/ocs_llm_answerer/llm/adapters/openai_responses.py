@@ -74,7 +74,7 @@ class OpenAIResponsesSession:
         user_input: UserInput,
         response_model: type[TOutput],
     ) -> LLMCallResult[TOutput]:
-        """发送追加后的原生消息数组，原样保留响应输出项并解析目标 Schema。
+        """发送追加后的原生消息数组，以默认 text 接收文本并在本地加载校验目标 JSON Schema。
 
         Args:
             user_input: 本轮用户输入内容。
@@ -92,12 +92,23 @@ class OpenAIResponsesSession:
         user_item = _build_user_item(user_input)
         request_items: list[ResponseInputItemParam] = [*self._items, user_item]
         try:
-            raw_response = await self._client.responses.with_raw_response.parse(
+            # 刻意使用 Responses API 默认的纯文本输出（text.format.type = "text"），而不传
+            # json_schema 结构化约束（responses.parse + text_format）：
+            # 1. 部分上游模型与内置服务端工具（如 DeepSeek 的 deepseek_web_search、
+            #    deepseek_read_url 等）明确只支持 text 输出格式，传入 json_schema 会直接返回
+            #    HTTP 400；使用默认 text 后，通过 extra_body 开启联网搜索等扩展能力时无需额外覆写
+            #    text 字段，后续扩展也更灵活。
+            # 2. 避免不同兼容网关对 json_schema 实现不一致导致的报错，同时避免 OpenAI SDK 的
+            #    parse() 严格 JSON 校验在模型返回 ```json 代码块或包裹文本时抢先抛异常，从而绕过
+            #    本地容错解析与同会话纠错重试。
+            # 3. 业务结构由提示词约束，收到文本后统一交由 parse_structured_output() 执行本地 JSON
+            #    加载与 Pydantic 校验，失败时抛出可重试的 ProviderOutputError。
+            raw_response = await self._client.responses.with_raw_response.create(
                 model=self._model,
                 instructions=self._instructions,
                 input=request_items,
                 store=False,
-                text_format=response_model,
+                text={"format": {"type": "text"}},
                 extra_body=self._extra_body,
             )
         except APITimeoutError as exc:
@@ -111,26 +122,6 @@ class OpenAIResponsesSession:
         try:
             response = raw_response.parse()
             usage = _extract_usage(response)
-        except Exception as exc:
-            _raise_with_raw(exc, response_body_raw, raw_response.status_code)
-
-        parsed = getattr(response, "output_parsed", None)
-        if isinstance(parsed, response_model):
-            output_items = _extract_history_items(
-                response,
-                raw_body=response_body_raw,
-                fallback_text=parsed.model_dump_json(),
-            )
-            self._items.append(user_item)
-            self._items.extend(output_items)
-            return LLMCallResult(
-                parsed=parsed,
-                response_body_raw=response_body_raw,
-                http_status=raw_response.status_code,
-                usage=usage,
-            )
-
-        try:
             output_text = _extract_output_text(response)
         except Exception as exc:
             _raise_with_raw(exc, response_body_raw, raw_response.status_code)
@@ -303,7 +294,7 @@ def _extract_output_text(response: object) -> str:
         response: SDK 返回的响应对象。
 
     Returns:
-        首个可用的输出文本，不删除或重新编码其内容。
+        非空输出文本（多段消息文本按换行拼接），不删除或重新编码其内容。
 
     Raises:
         RuntimeError: 没有可用的输出文本。
@@ -312,6 +303,7 @@ def _extract_output_text(response: object) -> str:
     if isinstance(direct, str) and direct.strip():
         return direct
 
+    texts: list[str] = []
     for item in getattr(response, "output", []):
         if getattr(item, "type", None) != "message":
             continue
@@ -319,7 +311,9 @@ def _extract_output_text(response: object) -> str:
             if getattr(content, "type", None) == "output_text":
                 text = getattr(content, "text", "")
                 if isinstance(text, str) and text:
-                    return text
+                    texts.append(text)
+    if texts:
+        return "\n".join(texts)
 
     dumped = (
         response.model_dump_json() if hasattr(response, "model_dump_json") else json.dumps(response)
